@@ -98,7 +98,7 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 
 ## 直接下载
 
-不想自己编译的话，在 [Releases](https://github.com/raferlyan/Hark/releases) 页面下载安装包和模型：
+不想自己编译的话，在 [Releases](https://github.com/raferlyan/Hark/releases) 页面下载安装包和模型。模型没有变化的版本不会重复上传：唤醒、普通话、方言、SenseVoice 四个模型包在 [v0.3.0](https://github.com/raferlyan/Hark/releases/tag/v0.3.0) 里，声纹模型在 [v0.4.0](https://github.com/raferlyan/Hark/releases/tag/v0.4.0) 里，安装包用最新版。
 
 | 文件 | 内容 | 是否必需 |
 |---|---|---|
