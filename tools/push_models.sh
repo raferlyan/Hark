@@ -4,7 +4,7 @@
 #   tools/push_models.sh            # 推全部模型（约 900MB 解压后）
 #   tools/push_models.sh kws asr    # 只推唤醒 + 普通话流式
 #
-# 可选组：kws asr tele sensevoice vad
+# 可选组：kws asr tele sensevoice vad speaker（声纹，可选）
 set -euo pipefail
 
 PKG=com.raferlyan.hark
@@ -23,12 +23,19 @@ model_of() {
 }
 
 groups=("$@")
-[ $# -eq 0 ] && groups=(kws asr tele sensevoice vad)
+[ $# -eq 0 ] && groups=(kws asr tele sensevoice vad speaker)
 
 mkdir -p "$DL"
 adb shell mkdir -p "$DST"
 
 for g in "${groups[@]}"; do
+  if [ "$g" = speaker ]; then
+    f=3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx
+    # release tag 本身就拼错成了 recongition
+    [ -f "$DL/$f" ] || curl -fSL -C - -o "$DL/$f" "$B/speaker-recongition-models/$f"
+    adb push "$DL/$f" "$DST/"
+    continue
+  fi
   if [ "$g" = vad ]; then
     [ -f "$DL/silero_vad.onnx" ] || curl -fSL -o "$DL/silero_vad.onnx" "$B/asr-models/silero_vad.onnx"
     adb push "$DL/silero_vad.onnx" "$DST/"

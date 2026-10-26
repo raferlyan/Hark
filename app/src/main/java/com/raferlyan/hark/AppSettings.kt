@@ -2,11 +2,12 @@ package com.raferlyan.hark
 
 import android.content.Context
 
-/** 识别模式：普通话流式（支持热词）/ 方言（TeleSpeech）/ 粤语及多语种（SenseVoice）。 */
+/** 识别模式：普通话流式（支持热词）/ 方言（TeleSpeech）/ 粤语及多语种（SenseVoice）/ 讯飞云端听写。 */
 enum class AsrMode(val label: String) {
     MANDARIN_STREAMING("普通话·流式（支持热词）"),
     DIALECT_TELESPEECH("方言·TeleSpeech（川/粤/闽/吴/湘等）"),
     SENSEVOICE("粤语/多语种·SenseVoice"),
+    IFLYTEK("讯飞云端听写（联网，上传录音；本地普通话兜底）"),
 }
 
 /** 设备形态：决定回复话术和浮窗位置。 */
@@ -62,6 +63,23 @@ data class AppSettings(
      * 代价是系统会额外做降噪/增益，远场唤醒率可能有变化，需要按设备实测。
      */
     val echoCancel: Boolean = true,
+    /** 声纹校验：只接受说唤醒词那个人的指令，其他人说话直接忽略。需要声纹模型。 */
+    val speakerVerify: Boolean = false,
+    /** 声纹相似度阈值，低于它就当作不是唤醒人。越大越严格（本人也更容易被拒）。 */
+    val speakerThreshold: Float = 0.45f,
+
+    /** 讯飞听写密钥，在讯飞开放平台控制台创建应用并开通「语音听写（流式版）」后获得；留空用 local.properties 里的。 */
+    val xfAppId: String = "",
+    val xfApiKey: String = "",
+    val xfApiSecret: String = "",
+    /** 讯飞方言参数：mandarin、cantonese、lmz（四川话）等，方言要先在控制台开通。 */
+    val xfAccent: String = "mandarin",
+    /** 讯飞方言免切：普通话和 23 种方言混说，要先在控制台开通。 */
+    val xfDialectFree: Boolean = false,
+    /** 讯飞结果加标点。指令识别一般不需要。 */
+    val xfPunctuation: Boolean = false,
+    /** 讯飞动态修正：边说边出字时会回头改字。 */
+    val xfDynamicCorrection: Boolean = true,
 
     /** 本地规则匹配不上时调用在线大模型。 */
     val llmEnabled: Boolean = true,
@@ -96,6 +114,15 @@ data class AppSettings(
             .putFloat("followUpSec", followUpSec)
             .putBoolean("bargeIn", bargeIn)
             .putBoolean("echoCancel", echoCancel)
+            .putBoolean("speakerVerify", speakerVerify)
+            .putFloat("speakerThreshold", speakerThreshold)
+            .putString("xfAppId", xfAppId)
+            .putString("xfApiKey", xfApiKey)
+            .putString("xfApiSecret", xfApiSecret)
+            .putString("xfAccent", xfAccent)
+            .putBoolean("xfDialectFree", xfDialectFree)
+            .putBoolean("xfPunctuation", xfPunctuation)
+            .putBoolean("xfDynamicCorrection", xfDynamicCorrection)
             .putBoolean("llmEnabled", llmEnabled)
             .putString("llmBaseUrl", llmBaseUrl)
             .putString("llmModel", llmModel)
@@ -138,6 +165,15 @@ data class AppSettings(
                 followUpSec = p.getFloat("followUpSec", d.followUpSec),
                 bargeIn = p.getBoolean("bargeIn", d.bargeIn),
                 echoCancel = p.getBoolean("echoCancel", d.echoCancel),
+                speakerVerify = p.getBoolean("speakerVerify", d.speakerVerify),
+                speakerThreshold = p.getFloat("speakerThreshold", d.speakerThreshold),
+                xfAppId = p.getString("xfAppId", d.xfAppId)!!,
+                xfApiKey = p.getString("xfApiKey", d.xfApiKey)!!,
+                xfApiSecret = p.getString("xfApiSecret", d.xfApiSecret)!!,
+                xfAccent = p.getString("xfAccent", d.xfAccent)!!,
+                xfDialectFree = p.getBoolean("xfDialectFree", d.xfDialectFree),
+                xfPunctuation = p.getBoolean("xfPunctuation", d.xfPunctuation),
+                xfDynamicCorrection = p.getBoolean("xfDynamicCorrection", d.xfDynamicCorrection),
                 llmEnabled = p.getBoolean("llmEnabled", d.llmEnabled),
                 llmBaseUrl = p.getString("llmBaseUrl", d.llmBaseUrl)!!,
                 llmModel = p.getString("llmModel", d.llmModel)!!,

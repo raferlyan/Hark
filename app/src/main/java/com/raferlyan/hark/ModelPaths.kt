@@ -38,10 +38,14 @@ class ModelPaths(ctx: Context) {
 
     val vad = File(root, "silero_vad.onnx").absolutePath
 
+    // 声纹：3D-Speaker CAM++ 中文，可选，缺了只是不做声纹校验
+    val speaker = File(root, "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx").absolutePath
+
     fun requiredFor(mode: AsrMode): List<String> {
         val kws = listOf(kwsEncoder, kwsDecoder, kwsJoiner, kwsTokens)
         return kws + when (mode) {
-            AsrMode.MANDARIN_STREAMING -> listOf(streamEncoder, streamDecoder, streamJoiner, streamTokens)
+            // 讯飞模式同时跑本地普通话模型：断句靠它，断网或讯飞报错时也用它的结果
+            AsrMode.MANDARIN_STREAMING, AsrMode.IFLYTEK -> listOf(streamEncoder, streamDecoder, streamJoiner, streamTokens)
             AsrMode.DIALECT_TELESPEECH -> listOf(teleModel, teleTokens, vad)
             AsrMode.SENSEVOICE -> listOf(svModel, svTokens, vad)
         }

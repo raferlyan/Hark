@@ -6,9 +6,14 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -26,10 +31,13 @@ import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import kotlin.math.abs
 
 /**
  * 调试界面：上半部分看实时状态（唤醒次数、音量、识别结果、回复、日志），
  * 下半部分调参数，点「保存并重启引擎」立即生效。
+ *
+ * 「上一句」可以回放刚才录到的声音，标注识别对不对、应该识别成什么，结果存进 files/labeled/。
  *
  * 也可以不说话直接测意图：`adb shell am start -n com.raferlyan.hark/.MainActivity --es cmd 打开手电筒`
  */
@@ -41,8 +49,16 @@ class MainActivity : Activity(), AssistantBus.Listener {
     private lateinit var partialView: TextView
     private lateinit var finalView: TextView
     private lateinit var replyView: TextView
+    private lateinit var utterView: TextView
+    private lateinit var expectedEdit: EditText
+    private lateinit var labelStatsView: TextView
+    private var player: AudioTrack? = null
+    private val main = Handler(Looper.getMainLooper())
     private lateinit var cmdEdit: EditText
     private lateinit var permView: TextView
+    private lateinit var dirtyView: TextView
+    /** 刚加载或刚保存时界面上的设置；滑块有量化误差，所以和界面比，不直接和 SharedPreferences 比。 */
+    private var savedUi: AppSettings? = null
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
 
@@ -51,6 +67,13 @@ class MainActivity : Activity(), AssistantBus.Listener {
     private lateinit var hotwordsEdit: EditText
     private lateinit var correctionsEdit: EditText
     private lateinit var svLangEdit: EditText
+    private lateinit var xfAppIdEdit: EditText
+    private lateinit var xfKeyEdit: EditText
+    private lateinit var xfSecretEdit: EditText
+    private lateinit var xfAccentEdit: EditText
+    private lateinit var xfDialectFreeBox: CheckBox
+    private lateinit var xfPunctBox: CheckBox
+    private lateinit var xfDwaBox: CheckBox
     private lateinit var testModeBox: CheckBox
     private lateinit var beepBox: CheckBox
     private lateinit var speakBox: CheckBox
@@ -59,6 +82,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
     private lateinit var overlayBox: CheckBox
     private lateinit var bargeInBox: CheckBox
     private lateinit var aecBox: CheckBox
+    private lateinit var speakerBox: CheckBox
     private lateinit var llmBox: CheckBox
     private lateinit var presetSpinner: Spinner
     private lateinit var llmUrlEdit: EditText
@@ -70,6 +94,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
         super.onCreate(savedInstanceState)
         setContentView(buildUi())
         bindSettings(AppSettings.load(this))
+        savedUi = collectSettings()
         requestPermissionsIfNeeded()
         handleCmd(intent)
     }
@@ -97,10 +122,26 @@ class MainActivity : Activity(), AssistantBus.Listener {
         onStats(AssistantBus.wakeCount)
         logView.text = AssistantBus.logs.joinToString("\n")
         scrollLogToEnd()
+        AssistantBus.lastUtterance?.let { onUtterance(it) }
+        refreshLabelStats()
+        main.post(checkDirty)
+    }
+
+    /**
+     * 界面上改的设置要点「保存并(重)启动」才生效，光切下拉框引擎还在用旧配置，很容易以为已经切过去了。
+     * 每秒和已保存的设置比一次，不一样就提示。
+     */
+    private val checkDirty = object : Runnable {
+        override fun run() {
+            dirtyView.visibility = if (collectSettings() != savedUi) View.VISIBLE else View.GONE
+            main.postDelayed(this, 1000)
+        }
     }
 
     override fun onStop() {
         AssistantBus.remove(this)
+        stopPlayback()
+        main.removeCallbacks(checkDirty)
         super.onStop()
     }
 
@@ -146,7 +187,95 @@ class MainActivity : Activity(), AssistantBus.Listener {
         scrollLogToEnd()
     }
 
+    override fun onUtterance(u: Utterance) {
+        utterView.text = buildString {
+            append("%.1fs".format(u.durationMs / 1000f))
+            if (u.text.isNotEmpty()) append(" · 「${u.text}」")
+            if (u.raw.isNotEmpty() && u.raw != u.text) append(" · 原始「${u.raw}」")
+            if (u.note.isNotEmpty()) append(" · ${u.note}")
+        }
+        expectedEdit.setText("")
+    }
+
     private fun scrollLogToEnd() = logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+
+    // ---------------------------------------------------------------- 上一句：回放 / 标注
+
+    /**
+     * 回放时把音量归一化，远场录音原样放几乎听不见。播放期间置 [AssistantBus.speaking]，
+     * 引擎不听麦克风，免得把回放当成指令。
+     */
+    private fun play() {
+        val u = AssistantBus.lastUtterance ?: return toast("还没有录音")
+        stopPlayback()
+        val peak = u.audio.maxOfOrNull { abs(it) }?.takeIf { it > 1e-4f } ?: return toast("这一句是静音")
+        val gain = 0.9f / peak
+        val pcm = ShortArray(u.audio.size) { (u.audio[it] * gain * 32767).toInt().toShort() }
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(AssistantEngine.SAMPLE_RATE)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+            )
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .setBufferSizeInBytes(pcm.size * 2)
+            .build()
+        track.write(pcm, 0, pcm.size)
+        player = track
+        AssistantBus.speaking = true
+        track.play()
+        main.postDelayed(stopPlaybackLater, u.durationMs + 300)
+    }
+
+    private val stopPlaybackLater = Runnable { stopPlayback() }
+
+    private fun stopPlayback() {
+        main.removeCallbacks(stopPlaybackLater)
+        val p = player ?: return
+        player = null
+        runCatching { p.stop() }
+        p.release()
+        AssistantBus.speaking = false
+    }
+
+    private fun label(correct: Boolean, expected: String = "") {
+        val u = AssistantBus.lastUtterance ?: return toast("还没有录音")
+        // 填的文本和识别结果一样，其实就是识别对了
+        val ok = correct || (expected.isNotEmpty() && expected == u.text)
+        Labels.save(this, u, ok, expected)
+        AssistantBus.log("标注：${if (ok) "✓ 正确" else "✗ 错误"}「${u.text}」" + (if (!ok && expected.isNotEmpty()) " → 「$expected」" else ""))
+        refreshLabelStats()
+        toast(if (ok) "已标为正确" else "已标为错误")
+    }
+
+    /** 把「原始识别 => 正确文本」加进纠错规则，保存并重启引擎后生效。 */
+    private fun addCorrection() {
+        val u = AssistantBus.lastUtterance ?: return toast("还没有录音")
+        val expected = expectedEdit.text.toString().trim()
+        if (expected.isEmpty()) return toast("先填正确文本")
+        if (u.raw.isEmpty()) return toast("这一句没有识别结果，没法写成纠错规则")
+        if (u.raw == expected) return toast("识别结果已经是这句了")
+        val rule = "${u.raw}=>$expected"
+        val cur = correctionsEdit.text.toString().trimEnd()
+        if (cur.lines().any { it.trim() == rule }) return toast("已经有这条规则")
+        correctionsEdit.setText(if (cur.isEmpty()) rule else "$cur\n$rule")
+        toast("已加到纠错规则，点「保存并(重)启动」生效")
+    }
+
+    private fun refreshLabelStats() {
+        val (n, ok) = Labels.stats(this)
+        labelStatsView.text = if (n == 0) "还没有标注" else "已标注 $n 条，正确 $ok 条（${ok * 100 / n}%）"
+    }
+
+    private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
 
     // ---------------------------------------------------------------- 设置
 
@@ -156,6 +285,13 @@ class MainActivity : Activity(), AssistantBus.Listener {
         hotwordsEdit.setText(s.hotwords)
         correctionsEdit.setText(s.corrections)
         svLangEdit.setText(s.senseVoiceLang)
+        xfAppIdEdit.setText(s.xfAppId)
+        xfKeyEdit.setText(s.xfApiKey)
+        xfSecretEdit.setText(s.xfApiSecret)
+        xfAccentEdit.setText(s.xfAccent)
+        xfDialectFreeBox.isChecked = s.xfDialectFree
+        xfPunctBox.isChecked = s.xfPunctuation
+        xfDwaBox.isChecked = s.xfDynamicCorrection
         testModeBox.isChecked = s.kwsTestMode
         beepBox.isChecked = s.beepOnWake
         speakBox.isChecked = s.speakReply
@@ -173,6 +309,8 @@ class MainActivity : Activity(), AssistantBus.Listener {
         overlayBox.isChecked = s.showOverlay
         bargeInBox.isChecked = s.bargeIn
         aecBox.isChecked = s.echoCancel
+        speakerBox.isChecked = s.speakerVerify
+        sliders["speakerThreshold"]!!.value = s.speakerThreshold
         llmBox.isChecked = s.llmEnabled
         llmUrlEdit.setText(s.llmBaseUrl)
         llmModelEdit.setText(s.llmModel)
@@ -193,6 +331,13 @@ class MainActivity : Activity(), AssistantBus.Listener {
         hotwordsScore = sliders["hotwordsScore"]!!.value,
         corrections = correctionsEdit.text.toString(),
         senseVoiceLang = svLangEdit.text.toString().trim().ifEmpty { "auto" },
+        xfAppId = xfAppIdEdit.text.toString().trim(),
+        xfApiKey = xfKeyEdit.text.toString().trim(),
+        xfApiSecret = xfSecretEdit.text.toString().trim(),
+        xfAccent = xfAccentEdit.text.toString().trim().ifEmpty { "mandarin" },
+        xfDialectFree = xfDialectFreeBox.isChecked,
+        xfPunctuation = xfPunctBox.isChecked,
+        xfDynamicCorrection = xfDwaBox.isChecked,
         listenTimeoutSec = sliders["listenTimeoutSec"]!!.value,
         endSilenceSec = sliders["endSilenceSec"]!!.value,
         vadThreshold = sliders["vadThreshold"]!!.value,
@@ -204,6 +349,8 @@ class MainActivity : Activity(), AssistantBus.Listener {
         showOverlay = overlayBox.isChecked,
         bargeIn = bargeInBox.isChecked,
         echoCancel = aecBox.isChecked,
+        speakerVerify = speakerBox.isChecked,
+        speakerThreshold = sliders["speakerThreshold"]!!.value,
         followUpSec = sliders["followUpSec"]!!.value,
         llmEnabled = llmBox.isChecked,
         llmBaseUrl = llmUrlEdit.text.toString().trim(),
@@ -252,7 +399,8 @@ class MainActivity : Activity(), AssistantBus.Listener {
             requestPermissionsIfNeeded()
             return
         }
-        collectSettings().save(this)
+        collectSettings().also { savedUi = it }.save(this)
+        dirtyView.visibility = View.GONE
         AssistantService.send(this, AssistantService.ACTION_START)
     }
 
@@ -307,6 +455,47 @@ class MainActivity : Activity(), AssistantBus.Listener {
             setTextColor(0xFF2E7D32.toInt())
             minHeight = dp(28)
         }
+        root.addView(label("上一句（回放 / 标注识别结果，存到 files/labeled/）"))
+        utterView = TextView(this).apply { textSize = 13f; text = "还没有录音" }
+        root.addView(utterView, matchWrap())
+        val playRow = LinearLayout(this)
+        playRow.addView(Button(this).apply {
+            text = "▶ 回放"
+            setOnClickListener { play() }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        playRow.addView(Button(this).apply {
+            text = "✓ 正确"
+            setOnClickListener { label(true) }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        playRow.addView(Button(this).apply {
+            text = "✗ 错误"
+            setOnClickListener { label(false, expectedEdit.text.toString().trim()) }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(playRow, matchWrap())
+        val expectedRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        expectedEdit = EditText(this).apply {
+            setSingleLine()
+            textSize = 14f
+            hint = "应识别为…（填好点保存）"
+        }
+        expectedRow.addView(expectedEdit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        expectedRow.addView(Button(this).apply {
+            text = "保存"
+            setOnClickListener {
+                val t = expectedEdit.text.toString().trim()
+                if (t.isEmpty()) toast("先填正确文本") else label(false, t)
+            }
+        })
+        root.addView(expectedRow, matchWrap())
+        val statsRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        labelStatsView = TextView(this).apply { textSize = 12f; setTextColor(0xFF757575.toInt()) }
+        statsRow.addView(labelStatsView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        statsRow.addView(Button(this).apply {
+            text = "加到纠错规则"
+            setOnClickListener { addCorrection() }
+        })
+        root.addView(statsRow, matchWrap())
+
         root.addView(label("助手回复"))
         root.addView(replyView, matchWrap())
 
@@ -339,6 +528,15 @@ class MainActivity : Activity(), AssistantBus.Listener {
             setOnClickListener { bindSettings(AppSettings()) }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(buttons, matchWrap())
+        dirtyView = TextView(this).apply {
+            text = "设置有改动，还没生效：点「保存并(重)启动」"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(0xFFE65100.toInt())
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            visibility = View.GONE
+        }
+        root.addView(dirtyView, matchWrap())
 
         logView = TextView(this).apply {
             textSize = 11f
@@ -371,6 +569,9 @@ class MainActivity : Activity(), AssistantBus.Listener {
         aecBox = CheckBox(this).apply { text = "录音开启回声消除（打断更灵敏，可能影响识别率）" }
         root.addView(aecBox)
         addSlider(root, "followUpSec", "回复后继续聆听（秒，期间不用再唤醒；0 = 不继续）", 0f, 15f, 1f)
+        speakerBox = CheckBox(this).apply { text = "声纹校验：只听说唤醒词那个人的指令（需要声纹模型）" }
+        root.addView(speakerBox)
+        addSlider(root, "speakerThreshold", "声纹相似度阈值（大→更严格，本人也更容易被拒；日志里有每句的相似度）", 0.2f, 0.8f, 0.01f)
         permView = TextView(this).apply { textSize = 13f; setPadding(0, dp(8), 0, 0) }
         root.addView(permView)
         val permRow = LinearLayout(this)
@@ -446,8 +647,12 @@ class MainActivity : Activity(), AssistantBus.Listener {
             )
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                    svLangEdit.isEnabled = AsrMode.entries[pos] == AsrMode.SENSEVOICE
-                    hotwordsEdit.isEnabled = AsrMode.entries[pos] == AsrMode.MANDARIN_STREAMING
+                    val mode = AsrMode.entries[pos]
+                    svLangEdit.isEnabled = mode == AsrMode.SENSEVOICE
+                    // 讯飞模式的热词在讯飞控制台配；这里的热词给兜底的本地模型用
+                    hotwordsEdit.isEnabled = mode == AsrMode.MANDARIN_STREAMING || mode == AsrMode.IFLYTEK
+                    listOf(xfAppIdEdit, xfKeyEdit, xfSecretEdit, xfAccentEdit, xfDialectFreeBox, xfPunctBox, xfDwaBox)
+                        .forEach { it.isEnabled = mode == AsrMode.IFLYTEK }
                 }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
@@ -457,6 +662,28 @@ class MainActivity : Activity(), AssistantBus.Listener {
         svLangEdit = EditText(this).apply { setSingleLine() }
         root.addView(label("SenseVoice 语种：auto / zh / yue / en / ja / ko"))
         root.addView(svLangEdit, matchWrap())
+        root.addView(label("讯飞听写（讯飞开放平台控制台 → 语音听写（流式版）里查看；留空用 local.properties 的 xf.*）"))
+        xfAppIdEdit = EditText(this).apply { setSingleLine(); textSize = 14f; hint = "APPID" }
+        xfKeyEdit = EditText(this).apply {
+            setSingleLine(); textSize = 14f; hint = "APIKey"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        xfSecretEdit = EditText(this).apply {
+            setSingleLine(); textSize = 14f; hint = "APISecret"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        root.addView(xfAppIdEdit, matchWrap())
+        root.addView(xfKeyEdit, matchWrap())
+        root.addView(xfSecretEdit, matchWrap())
+        xfAccentEdit = EditText(this).apply { setSingleLine(); textSize = 14f }
+        root.addView(label("讯飞方言 accent：mandarin 普通话 / cantonese 粤语 / lmz 四川话等（方言要先在控制台开通）"))
+        root.addView(xfAccentEdit, matchWrap())
+        xfDialectFreeBox = CheckBox(this).apply { text = "讯飞方言免切（普通话 + 23 种方言混说，需在控制台开通）" }
+        xfPunctBox = CheckBox(this).apply { text = "讯飞结果加标点" }
+        xfDwaBox = CheckBox(this).apply { text = "讯飞动态修正（实时识别会回头改字）" }
+        root.addView(xfDialectFreeBox)
+        root.addView(xfPunctBox)
+        root.addView(xfDwaBox)
         addSlider(root, "endSilenceSec", "句尾静音判定（秒）", 0.3f, 2.0f, 0.1f)
         addSlider(root, "vadThreshold", "VAD 阈值（方言模式；小→灵敏，远场/小声调低）", 0.1f, 0.7f, 0.05f)
         addSlider(root, "listenTimeoutSec", "唤醒后无语音超时（秒）", 2f, 15f, 0.5f)
