@@ -30,6 +30,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -325,12 +327,15 @@ class AssistantEngine(
         AssistantBus.log("录音源 ${if (settings.echoCancel) "VOICE_COMMUNICATION" else "VOICE_RECOGNITION"}，" +
             "回声消除 ${if (aec?.enabled == true) "已开启" else if (AcousticEchoCanceler.isAvailable()) "未开启" else "设备不支持"}")
 
-        val pcm = ShortArray(VAD_WINDOW)
-        val samples = FloatArray(VAD_WINDOW)
         var phase = Phase.IDLE
         var asrStream: OnlineStream? = null
         var listenStart = 0L
         var listenTimeoutMs = 0L
+        // 聆听超时按实际处理到的音频算，不按墙上时间：识别跟不上实时、音频还在队列里排着时，不能先判超时
+        var listenSamples = 0L
+        // 诊断：本次聆听处理了多少音频、花了多少 CPU 时间（算实时率）
+        var listenBusyNs = 0L
+        var listenAudioSamples = 0L
         // 诊断：播报回复期间麦克风的峰值，用来判断打断时唤醒词是不是被回声盖住了
         var echoPeakDb = -100f
         var speechSeen = false
@@ -363,9 +368,37 @@ class AssistantEngine(
             cloud = null
         }
 
+        // 录音单独一个线程，只管读麦克风往队列里放。识别模型在弱 CPU（如 RK3562）上跟不上实时的时候，
+        // 音频在队列里排队而不是在 AudioRecord 缓冲区里溢出丢掉——以前就是这样，说了五六秒只录进去一秒多。
+        val queue = LinkedBlockingQueue<Chunk>(MAX_BACKLOG_CHUNKS)
+        var overflowed = 0
         record.startRecording()
+        val mic = Thread({
+            val pcm = ShortArray(VAD_WINDOW)
+            while (running) {
+                val n = record.read(pcm, 0, pcm.size)
+                if (n <= 0) continue
+                // 播报状态在录下这一帧时就记下来，排队晚处理也不会把「我在」算进指令、或把指令当回声丢掉
+                val c = Chunk(FloatArray(n) { pcm[it] / 32768f }, AssistantBus.speaking)
+                if (!queue.offer(c)) {
+                    queue.poll()
+                    queue.offer(c)
+                    overflowed++
+                }
+            }
+        }, "hark-mic").apply { start() }
         AssistantBus.state(EngineState.IDLE)
         AssistantBus.log("开始监听麦克风（${SAMPLE_RATE}Hz）")
+
+        /** 本次聆听的处理速度，写进日志用来判断设备是不是算不过来。 */
+        fun perf(): String {
+            val audioMs = listenAudioSamples * 1000 / SAMPLE_RATE
+            val rtf = if (listenAudioSamples > 0) listenBusyNs / 1e6 / audioMs else 0.0
+            val backlogMs = queue.size.toLong() * VAD_WINDOW * 1000 / SAMPLE_RATE
+            return "处理音频 ${audioMs}ms，实时率 %.2f，积压 ${backlogMs}ms".format(rtf) +
+                (if (overflowed > 0) "，积压过多丢弃 $overflowed 帧" else "") +
+                (if (rtf > 1.0) "（>1 表示识别跟不上说话，可调大线程数或换小模型）" else "")
+        }
 
         fun backToIdle() {
             asrStream?.release(); asrStream = null
@@ -385,6 +418,9 @@ class AssistantEngine(
             phase = Phase.LISTENING
             listenStart = SystemClock.elapsedRealtime()
             listenTimeoutMs = (timeoutSec * 1000).toLong()
+            listenSamples = 0L
+            listenBusyNs = 0L
+            listenAudioSamples = 0L
             speechSeen = false
             listenPeakDb = -100f
             listenMuted = 0
@@ -436,6 +472,7 @@ class AssistantEngine(
             }
             // 接着等唤醒人说话，超时重新算，别让别人的长句把唤醒人的时间耗光
             listenStart = SystemClock.elapsedRealtime()
+            listenSamples = 0L
             speechSeen = false
             lastPartial = ""
             utterance.clear()
@@ -448,7 +485,7 @@ class AssistantEngine(
         }
 
         fun noCommand() {
-            AssistantBus.log("没有听到指令，回到待唤醒（峰值 %.0f dB，静音丢弃 %d 帧）".format(listenPeakDb, listenMuted))
+            AssistantBus.log("没有听到指令，回到待唤醒（峰值 %.0f dB，静音丢弃 %d 帧，%s）".format(listenPeakDb, listenMuted, perf()))
             val audio = utterance.toArray()
             // 超时的录音也留着，方便排查“明明说了却没听到”
             if (settings.saveAudio) saveWav(audio, "timeout")
@@ -464,7 +501,7 @@ class AssistantEngine(
             val cost = SystemClock.elapsedRealtime() - listenStart
             AssistantBus.log(
                 "识别结果：「$text」" + (if (text != rawText.trim()) "（原始「${rawText.trim()}」）" else "") +
-                    " $extra 唤醒后 ${cost}ms",
+                    " $extra 唤醒后 ${cost}ms，${perf()}",
             )
             if (settings.saveAudio) saveWav(utterance.toArray(), text)
             AssistantBus.utterance(Utterance(audio, text, rawText.trim(), extra, settings.asrMode))
@@ -486,10 +523,10 @@ class AssistantEngine(
 
         try {
             while (running) {
-                val n = record.read(pcm, 0, pcm.size)
-                if (n <= 0) continue
-                for (i in 0 until n) samples[i] = pcm[i] / 32768f
-                val chunk = if (n == samples.size) samples else samples.copyOf(n)
+                val item = queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
+                val chunk = item.pcm
+                val muted = item.muted
+                val tick0 = System.nanoTime()
 
                 // 会话控制（来自 VoiceSession，在引擎线程里统一生效）
                 request?.let { req ->
@@ -511,7 +548,7 @@ class AssistantEngine(
                 // 打断：播报回复 / 等大模型的时候只跑唤醒模型，听到唤醒词就停掉播报重新聆听。
                 // 识别模型在播报时不开：没有回声消除，会把自己的声音识别成指令；唤醒词则很难被回复内容误触发。
                 if (phase == Phase.WAITING && settings.bargeIn) {
-                    if (AssistantBus.speaking) echoPeakDb = max(echoPeakDb, db)
+                    if (muted) echoPeakDb = max(echoPeakDb, db)
                     val kw = spot(chunk)
                     if (kw != null) {
                         AssistantBus.log("★ 打断：$kw（播报中=${AssistantBus.speaking}）")
@@ -521,12 +558,12 @@ class AssistantEngine(
                         startListening(settings.listenTimeoutSec)
                         lockSpeaker()
                     }
-                    wasSpeaking = AssistantBus.speaking
+                    wasSpeaking = muted
                     continue
                 }
 
                 // 自己播报时不听，播完重置唤醒流，避免把 TTS 的尾音当作唤醒词
-                if (AssistantBus.speaking) {
+                if (muted) {
                     wasSpeaking = true
                     if (phase == Phase.LISTENING) listenMuted++
                     continue
@@ -535,7 +572,10 @@ class AssistantEngine(
                     wasSpeaking = false
                     kws!!.reset(kwsStream!!)
                     // 「我在」播完才开始算聆听超时
-                    if (phase == Phase.LISTENING) listenStart = SystemClock.elapsedRealtime()
+                    if (phase == Phase.LISTENING) {
+                        listenStart = SystemClock.elapsedRealtime()
+                        listenSamples = 0L
+                    }
                 }
 
                 when (phase) {
@@ -555,8 +595,10 @@ class AssistantEngine(
                     // 等回复播完；这段时间的音频不用
                     Phase.WAITING -> {}
 
-                    Phase.LISTENING -> {
+                    Phase.LISTENING -> try {
                         utterance.add(chunk)
+                        listenSamples += chunk.size
+                        listenAudioSamples += chunk.size
                         val rec = online
                         if (rec != null) {
                             val s = asrStream!!
@@ -610,7 +652,7 @@ class AssistantEngine(
                                 rec.isEndpoint(s) && text.isNotBlank() ->
                                     accept(text, if (c != null) "讯飞失败，用本地结果" else "")
                                 text.isBlank() && (!cloudOk || c!!.text.isBlank()) &&
-                                    now - listenStart > listenTimeoutMs -> noCommand()
+                                    listenSamples * 1000 / SAMPLE_RATE > listenTimeoutMs -> noCommand()
                             }
                         } else {
                             val v = vad!!
@@ -641,15 +683,19 @@ class AssistantEngine(
                                 }
                                 finish(r.text, audio, extra)
                             } else if (!speechSeen &&
-                                SystemClock.elapsedRealtime() - listenStart > listenTimeoutMs
+                                listenSamples * 1000 / SAMPLE_RATE > listenTimeoutMs
                             ) {
                                 noCommand()
                             }
                         }
+                    } finally {
+                        listenBusyNs += System.nanoTime() - tick0
                     }
                 }
             }
         } finally {
+            running = false
+            mic.join(1000)
             asrStream?.release()
             cloud?.cancel()
             aec?.release()
@@ -690,6 +736,9 @@ class AssistantEngine(
         dir.listFiles()?.sortedBy { it.lastModified() }?.dropLast(MAX_RECORDINGS)?.forEach { it.delete() }
     }
 
+    /** 麦克风线程读到的一帧，[muted] 是录下这帧时是否正在播报。 */
+    private class Chunk(val pcm: FloatArray, val muted: Boolean)
+
     private class FloatBuffer {
         private var buf = FloatArray(SAMPLE_RATE * 4)
         private var n = 0
@@ -725,6 +774,8 @@ class AssistantEngine(
         const val VAD_WINDOW = 512
         const val MAX_UTTERANCE_SEC = 15f
         const val MAX_RECORDINGS = 30
+        /** 录音队列最多攒多少帧（每帧 32ms，约 30 秒），再多就丢最老的。 */
+        const val MAX_BACKLOG_CHUNKS = 1000
         const val VAD_PREROLL_SEC = 1.0f
         /** 唤醒命中时往回取多少秒当作唤醒词音频（四字唤醒词约 1.2s，多留一点给尾随 blank）。 */
         const val WAKE_AUDIO_SEC = 2.0f
