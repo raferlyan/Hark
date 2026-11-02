@@ -63,6 +63,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
     private lateinit var logScroll: ScrollView
 
     private lateinit var modeSpinner: Spinner
+    private lateinit var streamModelSpinner: Spinner
     private lateinit var keywordsEdit: EditText
     private lateinit var hotwordsEdit: EditText
     private lateinit var correctionsEdit: EditText
@@ -281,6 +282,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
 
     private fun bindSettings(s: AppSettings) {
         modeSpinner.setSelection(s.asrMode.ordinal)
+        streamModelSpinner.setSelection(s.streamModel.ordinal)
         keywordsEdit.setText(s.keywords)
         hotwordsEdit.setText(s.hotwords)
         correctionsEdit.setText(s.corrections)
@@ -327,6 +329,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
         kwsTrailingBlanks = sliders["kwsTrailingBlanks"]!!.value.toInt(),
         kwsTestMode = testModeBox.isChecked,
         asrMode = AsrMode.entries[modeSpinner.selectedItemPosition],
+        streamModel = StreamModel.entries[streamModelSpinner.selectedItemPosition],
         hotwords = hotwordsEdit.text.toString(),
         hotwordsScore = sliders["hotwordsScore"]!!.value,
         corrections = correctionsEdit.text.toString(),
@@ -651,6 +654,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
                     svLangEdit.isEnabled = mode == AsrMode.SENSEVOICE
                     // 讯飞模式的热词在讯飞控制台配；这里的热词给兜底的本地模型用
                     hotwordsEdit.isEnabled = mode == AsrMode.MANDARIN_STREAMING || mode == AsrMode.IFLYTEK
+                    streamModelSpinner.isEnabled = mode == AsrMode.MANDARIN_STREAMING || mode == AsrMode.IFLYTEK
                     listOf(xfAppIdEdit, xfKeyEdit, xfSecretEdit, xfAccentEdit, xfDialectFreeBox, xfPunctBox, xfDwaBox)
                         .forEach { it.isEnabled = mode == AsrMode.IFLYTEK }
                 }
@@ -659,6 +663,13 @@ class MainActivity : Activity(), AssistantBus.Listener {
         }
         root.addView(label("识别模式"))
         root.addView(modeSpinner, matchWrap())
+        streamModelSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item, StreamModel.entries.map { it.label },
+            )
+        }
+        root.addView(label("普通话流式模型（讯飞模式的本地兜底也用它；设备跟不上实时就换小的，模型用 tools/push_models.sh 推）"))
+        root.addView(streamModelSpinner, matchWrap())
         svLangEdit = EditText(this).apply { setSingleLine() }
         root.addView(label("SenseVoice 语种：auto / zh / yue / en / ja / ko"))
         root.addView(svLangEdit, matchWrap())

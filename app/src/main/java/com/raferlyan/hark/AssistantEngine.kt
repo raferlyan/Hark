@@ -23,6 +23,7 @@ import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.OnlineZipformer2CtcModelConfig
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
@@ -82,7 +83,7 @@ class AssistantEngine(
     /** 结束本次会话，回到待唤醒。任意线程可调用。 */
     fun endSession() { request = End }
 
-    private val paths = ModelPaths(ctx)
+    private val paths = ModelPaths(ctx, settings)
     @Volatile private var running = false
     private var thread: Thread? = null
 
@@ -136,6 +137,9 @@ class AssistantEngine(
         if (missing.isNotEmpty()) {
             AssistantBus.log("缺少模型文件（请先运行 tools/push_models.sh）：")
             missing.forEach { AssistantBus.log("  ✗ $it") }
+            if (settings.asrMode == AsrMode.MANDARIN_STREAMING || settings.asrMode == AsrMode.IFLYTEK) {
+                AssistantBus.log("当前流式模型：${settings.streamModel.label}，推送：tools/push_models.sh ${settings.streamModel.group}")
+            }
             return false
         }
         val prep = TextPrep(ctx)
@@ -201,25 +205,40 @@ class AssistantEngine(
                         } ?: "⚠ 讯飞 APPID / APIKey / APISecret 没填全，只用本地普通话识别",
                     )
                 }
-                val hw = prep.prepareHotwords(settings.hotwords, paths.streamTokens)
+                val sm = settings.streamModel
+                // 热词靠 modified_beam_search，只有 transducer 模型能用；CTC 模型只能靠纠错表兜底
+                val hw = if (sm.ctc) {
+                    if (settings.hotwords.isNotBlank()) AssistantBus.log("⚠ ${sm.label} 是 CTC 模型，不支持热词，热词不生效")
+                    TextPrep.Prepared("", 0, emptyList())
+                } else {
+                    prep.prepareHotwords(settings.hotwords, paths.streamTokens)
+                }
                 hw.warnings.forEach { AssistantBus.log("⚠ $it") }
                 val hwFile = File(ctx.filesDir, "hotwords.txt").apply { writeText(hw.content + "\n") }
-                AssistantBus.log("热词 ${hw.count} 个，hotwordsScore=${settings.hotwordsScore}")
-                timed("加载普通话流式模型") {
+                if (!sm.ctc) AssistantBus.log("热词 ${hw.count} 个，hotwordsScore=${settings.hotwordsScore}")
+                timed("加载普通话流式模型（${sm.label}）") {
                     online = OnlineRecognizer(
                         assetManager = null,
                         config = OnlineRecognizerConfig(
                             featConfig = feat,
-                            modelConfig = OnlineModelConfig(
-                                transducer = OnlineTransducerModelConfig(
-                                    encoder = paths.streamEncoder,
-                                    decoder = paths.streamDecoder,
-                                    joiner = paths.streamJoiner,
-                                ),
-                                tokens = paths.streamTokens,
-                                numThreads = settings.numThreads,
-                                modelingUnit = "cjkchar",
-                            ),
+                            modelConfig = if (sm.ctc) {
+                                OnlineModelConfig(
+                                    zipformer2Ctc = OnlineZipformer2CtcModelConfig(model = paths.streamCtc),
+                                    tokens = paths.streamTokens,
+                                    numThreads = settings.numThreads,
+                                )
+                            } else {
+                                OnlineModelConfig(
+                                    transducer = OnlineTransducerModelConfig(
+                                        encoder = paths.streamEncoder,
+                                        decoder = paths.streamDecoder,
+                                        joiner = paths.streamJoiner,
+                                    ),
+                                    tokens = paths.streamTokens,
+                                    numThreads = settings.numThreads,
+                                    modelingUnit = "cjkchar",
+                                )
+                            },
                             endpointConfig = EndpointConfig(
                                 // 「一直不说话」的超时由主循环自己计时（播报期间不算），这里设成很长
                                 rule1 = EndpointRule(false, MAX_UTTERANCE_SEC * 2, 0f),

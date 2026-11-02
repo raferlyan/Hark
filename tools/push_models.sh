@@ -3,8 +3,10 @@
 #
 #   tools/push_models.sh            # 推全部模型（约 900MB 解压后）
 #   tools/push_models.sh kws asr    # 只推唤醒 + 普通话流式
+#   tools/push_models.sh asr-small  # 弱 CPU 用的小一号普通话流式模型
 #
 # 可选组：kws asr tele sensevoice vad speaker（声纹，可选）
+# 备用普通话流式模型（设置里「普通话流式模型」切换，不在默认全推里）：asr-small asr-tiny asr-ctc
 set -euo pipefail
 
 PKG=com.raferlyan.hark
@@ -16,6 +18,9 @@ model_of() {
   case "$1" in
     kws) echo kws-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01-mobile ;;
     asr) echo asr-models/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30 ;;
+    asr-small) echo asr-models/sherpa-onnx-streaming-zipformer-multi-zh-hans-int8-2023-12-13 ;;
+    asr-tiny) echo asr-models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23-mobile ;;
+    asr-ctc) echo asr-models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01 ;;
     tele) echo asr-models/sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04 ;;
     sensevoice) echo asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 ;;
     *) echo "unknown group: $1" >&2; exit 1 ;;
@@ -52,6 +57,7 @@ for g in "${groups[@]}"; do
   for f in "$DL/$dir"/*.onnx "$DL/$dir"/tokens.txt; do
     case "$(basename "$f")" in
       encoder-epoch-12-avg-2-chunk-16-left-64.onnx) continue ;;  # KWS 用 int8 encoder
+      encoder-epoch-99-avg-1.onnx) continue ;;  # zh-14M 用 int8 encoder
     esac
     adb push "$f" "$DST/$dir/"
   done

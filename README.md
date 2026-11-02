@@ -96,6 +96,15 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 | 语音活动检测 | `silero_vad.onnx` | 0.6 MB | Silero VAD |
 | 推理运行时 | `sherpa-onnx-1.13.8.aar` | 48 MB | 自带 ONNX Runtime 和 JNI 库（已放在 `app/libs/`） |
 
+普通话流式模型比较吃 CPU。在骁龙 855（2 线程）上处理 1 秒音频要 0.3～0.5 秒，RK3562 这类只有 A53 小核的板子可能跟不上实时，表现为回复慢、积压大（日志「识别结果」一行末尾有实时率，大于 1 就是跟不上）。这时可以在设置的「普通话流式模型」里换小一号的，用 `tools/push_models.sh <组名>` 单独推送：
+
+| 选项 | 模型 | 组名 | 855 实时率 | 说明 |
+|---|---|---|---|---|
+| 大（默认） | `sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30` | `asr` | 0.29 | 最准 |
+| 中 | `sherpa-onnx-streaming-zipformer-multi-zh-hans-int8-2023-12-13` | `asr-small` | 0.23 | 约 76 MB，支持热词 |
+| 小 | `sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23-mobile` | `asr-tiny` | 0.19 | 14M 参数，准确率明显差 |
+| 小（CTC） | `sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01` | `asr-ctc` | 0.13 | 约 26 MB，不支持热词，只能靠纠错表 |
+
 ## 直接下载
 
 不想自己编译的话，在 [Releases](https://github.com/raferlyan/Hark/releases) 页面下载安装包和模型。模型没有变化的版本不会重复上传：唤醒、普通话、方言、SenseVoice 四个模型包在 [v0.3.0](https://github.com/raferlyan/Hark/releases/tag/v0.3.0) 里，声纹模型在 [v0.4.0](https://github.com/raferlyan/Hark/releases/tag/v0.4.0) 里，安装包用最新版。
@@ -135,7 +144,7 @@ tools/push_models.sh                 # 全部模型
 tools/push_models.sh kws vad asr     # 只装唤醒 + 普通话
 ```
 
-`push_models.sh` 支持的模型组有 `kws`、`asr`、`tele`、`sensevoice`、`vad`、`speaker`（声纹，约 27MB，只有开了声纹校验才用得到）。如果要换下载目录，设置环境变量 `MODEL_CACHE`。
+`push_models.sh` 支持的模型组有 `kws`、`asr`、`tele`、`sensevoice`、`vad`、`speaker`（声纹，约 27MB，只有开了声纹校验才用得到）。备用的小号普通话流式模型是 `asr-small`、`asr-tiny`、`asr-ctc`，不在默认全推里。如果要换下载目录，设置环境变量 `MODEL_CACHE`。
 
 4. 打开 App，录音权限选「**使用应用时允许**」（选「仅本次允许」的话，退到后台后权限会被收回）。
 5. 在「交互 / 浮窗」一栏点「**授予悬浮窗权限**」并打开开关。浮窗和「打开应用」「导航」这类需要从后台弹出界面的指令都依赖这个权限。ColorOS / MIUI 还要在应用权限里打开「**后台弹出界面**」。想用语音调亮度的话，再点「授予修改系统设置」。

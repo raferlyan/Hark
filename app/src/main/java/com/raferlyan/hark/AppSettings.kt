@@ -32,6 +32,8 @@ data class AppSettings(
     val kwsTestMode: Boolean = false,
 
     val asrMode: AsrMode = AsrMode.MANDARIN_STREAMING,
+    /** 普通话流式模式（和讯飞模式兜底）用哪个本地模型；弱 CPU 跟不上实时就换小的。 */
+    val streamModel: StreamModel = StreamModel.ZH_2025,
     /** 每行一个热词，可带分数：`手电筒 :2.5`。仅普通话流式模式生效。 */
     val hotwords: String = DEFAULT_HOTWORDS,
     val hotwordsScore: Float = 1.5f,
@@ -98,6 +100,7 @@ data class AppSettings(
             .putInt("kwsTrailingBlanks", kwsTrailingBlanks)
             .putBoolean("kwsTestMode", kwsTestMode)
             .putString("asrMode", asrMode.name)
+            .putString("streamModel", streamModel.name)
             .putString("hotwords", hotwords)
             .putFloat("hotwordsScore", hotwordsScore)
             .putString("corrections", corrections)
@@ -148,6 +151,8 @@ data class AppSettings(
                 kwsTestMode = p.getBoolean("kwsTestMode", d.kwsTestMode),
                 asrMode = runCatching { AsrMode.valueOf(p.getString("asrMode", d.asrMode.name)!!) }
                     .getOrDefault(d.asrMode),
+                streamModel = runCatching { StreamModel.valueOf(p.getString("streamModel", d.streamModel.name)!!) }
+                    .getOrDefault(d.streamModel),
                 hotwords = p.getString("hotwords", d.hotwords)!!,
                 hotwordsScore = p.getFloat("hotwordsScore", d.hotwordsScore),
                 corrections = p.getString("corrections", d.corrections)!!,
