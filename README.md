@@ -107,7 +107,7 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 
 ## 直接下载
 
-不想自己编译的话，在 [Releases](https://github.com/raferlyan/Hark/releases) 页面下载安装包和模型。模型没有变化的版本不会重复上传：唤醒、普通话、方言、SenseVoice 四个模型包在 [v0.3.0](https://github.com/raferlyan/Hark/releases/tag/v0.3.0) 里，声纹模型在 [v0.4.0](https://github.com/raferlyan/Hark/releases/tag/v0.4.0) 里，安装包用最新版。
+不想自己编译的话，在 [Releases](https://github.com/raferlyan/Hark/releases) 页面下载安装包和模型。模型没有变化的版本不会重复上传：唤醒、普通话、方言、SenseVoice 四个模型包在 [v0.3.0](https://github.com/raferlyan/Hark/releases/tag/v0.3.0) 里，声纹模型在 [v0.4.0](https://github.com/raferlyan/Hark/releases/tag/v0.4.0) 里，三个备用的小号普通话流式模型在 [v0.5.0](https://github.com/raferlyan/Hark/releases/tag/v0.5.0) 里，安装包用最新版。
 
 | 文件 | 内容 | 是否必需 |
 |---|---|---|
@@ -117,6 +117,7 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 | `hark-models-telespeech.tar.gz` | 方言识别（TeleSpeech） | 用方言模式时 |
 | `hark-models-sensevoice.tar.gz` | 粤语 / 多语种（SenseVoice） | 用 SenseVoice 模式时 |
 | `hark-models-speaker.tar.gz` | 声纹模型（3D-Speaker CAM++） | 开声纹校验时（v0.4.0 起） |
+| `hark-models-asr-small.tar.gz` / `-asr-tiny` / `-asr-ctc` | 小号普通话流式模型（中 / 小 / 小 CTC） | 设备跟不上实时、在设置里换模型时（v0.5.0 起） |
 
 每个模型包解压后都是一个 `models/` 目录，推送到手机即可：
 
