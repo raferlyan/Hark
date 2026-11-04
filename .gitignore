@@ -29,3 +29,7 @@ recordings/
 captures/
 .externalNativeBuild/
 .cxx/
+
+# 预置进系统镜像用的模型和 APK
+aosp/models/
+aosp/Hark.apk

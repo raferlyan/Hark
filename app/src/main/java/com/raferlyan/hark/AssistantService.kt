@@ -43,8 +43,14 @@ class AssistantService : Service() {
                 }
                 return START_STICKY
             }
+            ACTION_BOOT -> {
+                // 开机时 HarkApp 和 BootReceiver 可能都会发过来，已经在跑就别重新加载模型
+                if (engine != null) return START_STICKY
+                if (!goForeground()) return START_NOT_STICKY
+                startEngine()
+            }
             else -> { // START / RELOAD
-                goForeground()
+                if (!goForeground()) return START_NOT_STICKY
                 stopEngine()
                 startEngine()
             }
@@ -72,7 +78,8 @@ class AssistantService : Service() {
         AssistantBus.state(EngineState.STOPPED)
     }
 
-    private fun goForeground() {
+    /** 系统不让后台启动麦克风前台服务时返回 false，并改发一条「点此启动」通知。 */
+    private fun goForeground(): Boolean {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "语音唤醒", NotificationManager.IMPORTANCE_LOW),
@@ -87,10 +94,33 @@ class AssistantService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(1, n)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(1, n)
+            }
+            return true
+        } catch (e: RuntimeException) {
+            // Android 14+：普通应用从开机广播启动麦克风前台服务会被拒（SecurityException / ForegroundServiceStartNotAllowedException）
+            AssistantBus.log("系统不允许后台启动录音服务：${e.javaClass.simpleName}，已发通知，点一下即可启动")
+            val tap = PendingIntent.getActivity(
+                this, 1,
+                Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_START, true),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            nm.notify(
+                2,
+                Notification.Builder(this, CHANNEL)
+                    .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                    .setContentTitle("Hark 未能自动启动")
+                    .setContentText("点此启动语音唤醒")
+                    .setContentIntent(tap)
+                    .setAutoCancel(true)
+                    .build(),
+            )
+            stopSelf()
+            return false
         }
     }
 
@@ -103,6 +133,8 @@ class AssistantService : Service() {
         private const val CHANNEL = "assistant"
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
+        /** 开机自启：引擎已经在跑就不动。 */
+        const val ACTION_BOOT = "boot"
         /** 不经过语音，直接把一句文字交给会话处理（调试意图用）。 */
         const val ACTION_TEXT = "text"
         const val EXTRA_TEXT = "text"
@@ -110,7 +142,7 @@ class AssistantService : Service() {
         fun send(ctx: Context, action: String, text: String? = null) {
             val i = Intent(ctx, AssistantService::class.java).setAction(action)
             text?.let { i.putExtra(EXTRA_TEXT, it) }
-            if (action == ACTION_START) ctx.startForegroundService(i) else ctx.startService(i)
+            if (action == ACTION_START || action == ACTION_BOOT) ctx.startForegroundService(i) else ctx.startService(i)
         }
     }
 }

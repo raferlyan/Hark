@@ -65,6 +65,8 @@ data class AppSettings(
      * 代价是系统会额外做降噪/增益，远场唤醒率可能有变化，需要按设备实测。
      */
     val echoCancel: Boolean = true,
+    /** 开机后自动启动引擎。预置为系统应用时开机即可唤醒；普通安装在 Android 14+ 上可能被系统拦下，见 BootReceiver。 */
+    val autoStart: Boolean = true,
     /** 声纹校验：只接受说唤醒词那个人的指令，其他人说话直接忽略。需要声纹模型。 */
     val speakerVerify: Boolean = false,
     /** 声纹相似度阈值，低于它就当作不是唤醒人。越大越严格（本人也更容易被拒）。 */
@@ -117,6 +119,7 @@ data class AppSettings(
             .putFloat("followUpSec", followUpSec)
             .putBoolean("bargeIn", bargeIn)
             .putBoolean("echoCancel", echoCancel)
+            .putBoolean("autoStart", autoStart)
             .putBoolean("speakerVerify", speakerVerify)
             .putFloat("speakerThreshold", speakerThreshold)
             .putString("xfAppId", xfAppId)
@@ -170,6 +173,7 @@ data class AppSettings(
                 followUpSec = p.getFloat("followUpSec", d.followUpSec),
                 bargeIn = p.getBoolean("bargeIn", d.bargeIn),
                 echoCancel = p.getBoolean("echoCancel", d.echoCancel),
+                autoStart = p.getBoolean("autoStart", d.autoStart),
                 speakerVerify = p.getBoolean("speakerVerify", d.speakerVerify),
                 speakerThreshold = p.getFloat("speakerThreshold", d.speakerThreshold),
                 xfAppId = p.getString("xfAppId", d.xfAppId)!!,

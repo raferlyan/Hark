@@ -83,6 +83,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
     private lateinit var overlayBox: CheckBox
     private lateinit var bargeInBox: CheckBox
     private lateinit var aecBox: CheckBox
+    private lateinit var autoStartBox: CheckBox
     private lateinit var speakerBox: CheckBox
     private lateinit var llmBox: CheckBox
     private lateinit var presetSpinner: Spinner
@@ -90,6 +91,11 @@ class MainActivity : Activity(), AssistantBus.Listener {
     private lateinit var llmModelEdit: EditText
     private lateinit var llmKeyEdit: EditText
     private val sliders = LinkedHashMap<String, Slider>()
+
+    companion object {
+        /** 带上它打开界面就直接启动引擎（开机自启失败的通知用）。 */
+        const val EXTRA_START = "start"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,6 +117,11 @@ class MainActivity : Activity(), AssistantBus.Listener {
     }
 
     private fun handleCmd(i: Intent?) {
+        // 开机自启被系统拦下后，用户点通知进来
+        if (i?.getBooleanExtra(EXTRA_START, false) == true) {
+            i.removeExtra(EXTRA_START)
+            startEngine()
+        }
         val cmd = i?.getStringExtra("cmd") ?: return
         i.removeExtra("cmd")
         AssistantService.send(this, AssistantService.ACTION_TEXT, cmd)
@@ -311,6 +322,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
         overlayBox.isChecked = s.showOverlay
         bargeInBox.isChecked = s.bargeIn
         aecBox.isChecked = s.echoCancel
+        autoStartBox.isChecked = s.autoStart
         speakerBox.isChecked = s.speakerVerify
         sliders["speakerThreshold"]!!.value = s.speakerThreshold
         llmBox.isChecked = s.llmEnabled
@@ -352,6 +364,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
         showOverlay = overlayBox.isChecked,
         bargeIn = bargeInBox.isChecked,
         echoCancel = aecBox.isChecked,
+        autoStart = autoStartBox.isChecked,
         speakerVerify = speakerBox.isChecked,
         speakerThreshold = sliders["speakerThreshold"]!!.value,
         followUpSec = sliders["followUpSec"]!!.value,
@@ -571,6 +584,8 @@ class MainActivity : Activity(), AssistantBus.Listener {
         root.addView(bargeInBox)
         aecBox = CheckBox(this).apply { text = "录音开启回声消除（打断更灵敏，可能影响识别率）" }
         root.addView(aecBox)
+        autoStartBox = CheckBox(this).apply { text = "开机自动启动语音唤醒" }
+        root.addView(autoStartBox)
         addSlider(root, "followUpSec", "回复后继续聆听（秒，期间不用再唤醒；0 = 不继续）", 0f, 15f, 1f)
         speakerBox = CheckBox(this).apply { text = "声纹校验：只听说唤醒词那个人的指令（需要声纹模型）" }
         root.addView(speakerBox)

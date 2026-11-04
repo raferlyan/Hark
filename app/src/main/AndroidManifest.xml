@@ -15,6 +15,12 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- 开机自动启动语音唤醒 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 特权权限：预置到 priv-app 并在 privapp-permissions 白名单里放行后，后台打开应用不再依赖悬浮窗权限。
+         普通安装时系统直接忽略 -->
+    <uses-permission android:name="android.permission.START_ACTIVITIES_FROM_BACKGROUND"
+        tools:ignore="ProtectedPermissions" />
 
     <!-- Android 11+ 包可见性：不声明就绑定不到系统 TTS 引擎 -->
     <queries>
@@ -28,7 +34,10 @@
         </intent>
     </queries>
 
+    <!-- persistent 只对系统分区里的应用生效：开机后系统主动拉起进程并常驻，模型只加载一次；普通安装会被忽略 -->
     <application
+        android:name=".HarkApp"
+        android:persistent="true"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -50,5 +59,14 @@
             android:name=".AssistantService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

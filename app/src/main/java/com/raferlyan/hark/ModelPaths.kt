@@ -4,13 +4,21 @@ import android.content.Context
 import java.io.File
 
 /**
- * 模型不打进 APK，用 adb push 到 /sdcard/Android/data/com.raferlyan.hark/files/models/，
- * 换模型、调参都不用重新安装。见 tools/push_models.sh。
+ * 模型不打进 APK。调试时用 adb push 到 /sdcard/Android/data/com.raferlyan.hark/files/models/，
+ * 换模型、调参都不用重新安装，见 tools/push_models.sh；随系统预置时放在 /product/etc/hark/models 等只读分区，
+ * 见 aosp/README.md。每个文件按 [roots] 的顺序找，先找到哪个用哪个，所以 push 到 sdcard 的可以覆盖预置的。
  */
 class ModelPaths(ctx: Context, settings: AppSettings) {
-    val root: File = File(ctx.getExternalFilesDir(null), "models")
+    /** 开机早期外部存储可能还没挂载，getExternalFilesDir 会返回 null。 */
+    val root: File? = ctx.getExternalFilesDir(null)?.let { File(it, "models") }
 
-    private fun f(dir: String, name: String) = File(root, "$dir/$name").absolutePath
+    private val roots: List<File> = listOfNotNull(root) + SYSTEM_ROOTS.map(::File)
+
+    /** 都找不到时返回第一个位置的路径，缺文件提示里就是让用户 push 的那个位置。 */
+    private fun f(dir: String, name: String): String {
+        val rel = if (dir.isEmpty()) name else "$dir/$name"
+        return (roots.map { File(it, rel) }.firstOrNull { it.isFile } ?: File(roots.first(), rel)).absolutePath
+    }
 
     // 唤醒：wenetspeech 3.3M（拼音声韵母 token）
     private val kwsDir = "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01-mobile"
@@ -40,10 +48,10 @@ class ModelPaths(ctx: Context, settings: AppSettings) {
     val svModel = f(svDir, "model.int8.onnx")
     val svTokens = f(svDir, "tokens.txt")
 
-    val vad = File(root, "silero_vad.onnx").absolutePath
+    val vad = f("", "silero_vad.onnx")
 
     // 声纹：3D-Speaker CAM++ 中文，可选，缺了只是不做声纹校验
-    val speaker = File(root, "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx").absolutePath
+    val speaker = f("", "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx")
 
     fun requiredFor(mode: AsrMode): List<String> {
         val kws = listOf(kwsEncoder, kwsDecoder, kwsJoiner, kwsTokens)
@@ -56,6 +64,16 @@ class ModelPaths(ctx: Context, settings: AppSettings) {
     }
 
     fun missingFor(mode: AsrMode): List<String> = requiredFor(mode).filterNot { File(it).isFile }
+
+    companion object {
+        /** 预置模型的位置，对应 aosp/hark.mk 里 PRODUCT_COPY_FILES 的目标目录。 */
+        val SYSTEM_ROOTS = listOf(
+            "/product/etc/hark/models",
+            "/system_ext/etc/hark/models",
+            "/system/etc/hark/models",
+            "/vendor/etc/hark/models",
+        )
+    }
 }
 
 /**

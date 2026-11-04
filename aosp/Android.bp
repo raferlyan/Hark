@@ -1,0 +1,45 @@
+// Hark 预置为特权系统应用。把整个 aosp/ 目录（连同 Hark.apk）放进源码树，例如 vendor/raferlyan/hark/，
+// 然后在产品 mk 里 $(call inherit-product, vendor/raferlyan/hark/hark.mk)。说明见 README.md。
+
+android_app_import {
+    name: "Hark",
+    // ./gradlew assembleRelease 产物改名放到这里
+    apk: "Hark.apk",
+    // 编译时用平台密钥重签：自动获得 SYSTEM_ALERT_WINDOW、WRITE_SETTINGS（都是 signature 级），
+    // 以后用平台密钥签的 APK 也能直接 adb install 覆盖升级
+    certificate: "platform",
+    privileged: true,
+    product_specific: true,
+    dex_preopt: {
+        enabled: true,
+    },
+    required: [
+        "privapp-permissions-com.raferlyan.hark.xml",
+        "default-permissions-com.raferlyan.hark.xml",
+        "sysconfig-com.raferlyan.hark.xml",
+    ],
+}
+
+// 特权权限白名单：不放行的话，ro.control_privapp_permissions=enforce 的设备开不了机
+prebuilt_etc {
+    name: "privapp-permissions-com.raferlyan.hark.xml",
+    src: "privapp-permissions-com.raferlyan.hark.xml",
+    sub_dir: "permissions",
+    product_specific: true,
+}
+
+// 首次开机默认授予录音、通知权限，不用用户点
+prebuilt_etc {
+    name: "default-permissions-com.raferlyan.hark.xml",
+    src: "default-permissions-com.raferlyan.hark.xml",
+    sub_dir: "default-permissions",
+    product_specific: true,
+}
+
+// 省电白名单：Doze 下不限制网络（在线大模型、讯飞）
+prebuilt_etc {
+    name: "sysconfig-com.raferlyan.hark.xml",
+    src: "sysconfig-com.raferlyan.hark.xml",
+    sub_dir: "sysconfig",
+    product_specific: true,
+}

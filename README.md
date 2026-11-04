@@ -75,6 +75,14 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 | 加载 SenseVoice | 约 1.5 s |
 | 方言模式整句解码（2 至 3 秒语音） | 约 0.2 s |
 
+唤醒模型加载完就开始监听，识别模型在后台加载：点启动后约 0.3 s 就能唤醒。模型还没加载完时被唤醒，照样回「我在」，指令音频先存着，模型加载完再补识别。
+
+### 随系统预置（开机即可唤醒）
+
+做成 persistent 特权系统应用并用平台密钥签名：开机后系统自动拉起、常驻不被杀，录音、悬浮窗、修改设置权限都不用用户手动开，模型放在 `/product/etc/hark/models`。Android.bp、权限白名单和步骤见 [aosp/README.md](aosp/README.md)。
+
+普通安装时设置里的「开机自动启动」也会尝试开机自启，但 Android 14+ 不允许普通应用从开机广播启动录音服务，ColorOS 等系统还有自己的自启动管理，这时只会发一条「点此启动」的通知（或者什么都收不到）。
+
 ### 开发环境
 
 - JDK 17 及以上（Android Studio 自带的 JBR 即可）
@@ -376,6 +384,7 @@ TTS 播报开始时，置一个全局标记。在聆听状态下（比如播「�
 |---|---|
 | `AssistantEngine.kt` | 核心：录音、状态机、模型加载、唤醒和识别调度、录音保存 |
 | `AssistantService.kt` | 前台服务，承载引擎，保持后台监听 |
+| `BootReceiver.kt` / `HarkApp.kt` | 开机自启：普通安装靠开机广播，预置为 persistent 系统应用时进程一起来就启动 |
 | `TextPrep.kt` | 唤醒词转拼音 token、热词校验、纠错规则 |
 | `VoiceSession.kt` | 一次会话的调度：「我在」、浮窗状态、意图路由、大模型请求、连续对话 |
 | `IntentRouter.kt` | 本地意图规则和槽位抽取（含中文数字解析） |
@@ -385,13 +394,14 @@ TTS 播报开始时，置一个全局标记。在聆听状态下（比如播「�
 | `CapsuleOverlay.kt` | 胶囊浮窗和声波动画 |
 | `Speaker.kt` | 系统 TTS 封装，带播完回调 |
 | `AppSettings.kt` | 所有可调参数及默认值 |
-| `ModelPaths.kt` | 模型文件路径；换模型时改这里 |
+| `ModelPaths.kt` | 模型文件路径；先找 sdcard，再找系统分区预置目录；换模型时改这里 |
 | `MainActivity.kt` | 调试界面（纯代码布局，不依赖 AndroidX） |
 | `AssistantBus.kt` | 引擎到界面的事件通道和日志 |
 | `VoicePrint.kt` | 声纹提取（3D-Speaker CAM++）和相似度 |
 | `Labels.kt` | 调试面板的人工标注，写到 files/labeled/ |
 | `XfIat.kt` | 讯飞语音听写流式 WebAPI 客户端（鉴权签名 + 最小 WebSocket） |
-| `tools/push_models.sh` | 下载并推送模型 |
+| `tools/push_models.sh` | 下载并推送模型；`OUT=目录` 时拷到本地，用于预置进系统镜像 |
+| `aosp/` | 预置为系统应用的 Android.bp、hark.mk、权限白名单 |
 | `tools/gen_pinyin_table.py` | 用 pypinyin 重新生成拼音表 |
 
 ## 语义理解：识别出的句子怎么变成动作

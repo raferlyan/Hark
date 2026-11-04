@@ -15,8 +15,8 @@ android {
         applicationId 'com.raferlyan.hark'
         minSdk 26
         targetSdk 35
-        versionCode 5
-        versionName '0.5.0'
+        versionCode 6
+        versionName '0.6.0'
         ndk { abiFilters 'arm64-v8a' }
         // 发布包里不带 key，用户在设置里自己填
         buildConfigField 'String', 'LLM_DEBUG_KEY', '""'
@@ -28,8 +28,24 @@ android {
         buildConfig true
     }
 
+    // 预置成系统应用后（平台密钥签名），adb install 覆盖升级必须用同一把密钥签。
+    // 在 local.properties 里配 platform.storeFile / storePassword / keyAlias / keyPassword 就用它，
+    // 没配用 debug 密钥。平台密钥转 keystore 的方法见 aosp/README.md
+    signingConfigs {
+        if (localProps.getProperty('platform.storeFile')) {
+            platform {
+                storeFile rootProject.file(localProps.getProperty('platform.storeFile'))
+                storePassword localProps.getProperty('platform.storePassword')
+                keyAlias localProps.getProperty('platform.keyAlias')
+                keyPassword localProps.getProperty('platform.keyPassword')
+            }
+        }
+    }
+    def appSigning = signingConfigs.findByName('platform') ?: signingConfigs.debug
+
     buildTypes {
         debug {
+            signingConfig appSigning
             buildConfigField 'String', 'LLM_DEBUG_KEY', "\"${localProps.getProperty('llm.apiKey', '')}\""
             // 讯飞听写：xf.appId / xf.apiKey / xf.apiSecret
             buildConfigField 'String', 'XF_DEBUG_APP_ID', "\"${localProps.getProperty('xf.appId', '')}\""
@@ -38,7 +54,7 @@ android {
         }
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            signingConfig appSigning
         }
     }
     compileOptions {
