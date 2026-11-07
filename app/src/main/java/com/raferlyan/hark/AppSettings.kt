@@ -8,6 +8,7 @@ enum class AsrMode(val label: String) {
     DIALECT_TELESPEECH("方言·TeleSpeech（川/粤/闽/吴/湘等）"),
     SENSEVOICE("粤语/多语种·SenseVoice"),
     IFLYTEK("讯飞云端听写（联网，上传录音；本地普通话兜底）"),
+    RKNN_SENSEVOICE("SenseVoice·RK3562 NPU（试验，别的设备用不了）"),
 }
 
 /** 设备形态：决定回复话术和浮窗位置。 */

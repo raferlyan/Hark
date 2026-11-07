@@ -47,8 +47,8 @@ import kotlin.math.sqrt
  *
  * 普通话模式：流式 zipformer + modified_beam_search，热词实时生效，边说边出字。
  * 方言/SenseVoice 模式：silero VAD 切出一句话，再交给离线模型整句识别。
- * 讯飞模式：音频同时送给讯飞听写和本地普通话模型。本地模型负责断句，断句后让讯飞出最终结果；
- * 讯飞连不上、报错或迟迟不出结果，就用本地结果。
+ * 讯飞模式：silero VAD 断句，检测到说话才连讯飞、从句首开始上传，断句后让讯飞出最终结果。
+ * 本地普通话模型只加载不解码，不占 CPU；讯飞报错或迟迟不出结果时，才把这句录音交给它识别一次。
  *
  * 声纹校验（可选）：唤醒词那段音频提取声纹锁定本次会话，之后每句指令先比声纹，
  * 不是唤醒人说的就丢掉、继续聆听。打断时重新说唤醒词的人会成为新的锁定对象。
@@ -205,7 +205,8 @@ class AssistantEngine(
             true
         } catch (t: Throwable) {
             AssistantBus.log("识别模型加载失败：${t.javaClass.simpleName}: ${t.message}")
-            false
+            // 讯飞模式丢的只是兜底，还能继续用讯飞
+            xfConfig != null && vad != null
         }
     }
 
@@ -218,9 +219,14 @@ class AssistantEngine(
                     AssistantBus.log(
                         xfConfig?.let {
                             "讯飞听写：accent=${it.accent}，方言免切=${it.dialectFree}，标点=${it.punctuation}，" +
-                                "动态修正=${it.dynamicCorrection}，后端断句 ${it.eosMs}ms；本地普通话模型兜底"
+                                "动态修正=${it.dynamicCorrection}，后端断句 ${it.eosMs}ms；VAD 断句，本地普通话模型只在讯飞失败时兜底"
                         } ?: "⚠ 讯飞 APPID / APIKey / APISecret 没填全，只用本地普通话识别",
                     )
+                    if (xfConfig != null) {
+                        loadVad()
+                        // 讯飞有 VAD 就能用，不用等本地模型：弱 CPU 上它要加载很久
+                        asrReady = true
+                    }
                 }
                 val sm = settings.streamModel
                 // 热词靠 modified_beam_search，只有 transducer 模型能用；CTC 模型只能靠纠错表兜底
@@ -274,16 +280,30 @@ class AssistantEngine(
                 }
             }
 
-            AsrMode.DIALECT_TELESPEECH, AsrMode.SENSEVOICE -> {
-                val model = if (settings.asrMode == AsrMode.DIALECT_TELESPEECH) {
-                    OfflineModelConfig(
+            AsrMode.DIALECT_TELESPEECH, AsrMode.SENSEVOICE, AsrMode.RKNN_SENSEVOICE -> {
+                val model = when (settings.asrMode) {
+                    AsrMode.DIALECT_TELESPEECH -> OfflineModelConfig(
                         teleSpeech = paths.teleModel,
                         tokens = paths.teleTokens,
                         modelType = "telespeech_ctc",
                         numThreads = settings.numThreads,
                     )
-                } else {
-                    OfflineModelConfig(
+                    AsrMode.RKNN_SENSEVOICE -> {
+                        // NPU 初始化或运行出错时 sherpa-onnx 会直接退出进程，这里接不住，先留下线索
+                        AssistantBus.log("使用 RK NPU（provider=rknn）。如果应用闪退，看 logcat 里的 sherpa-onnx 和 RKNN 日志")
+                        OfflineModelConfig(
+                            senseVoice = OfflineSenseVoiceModelConfig(
+                                model = paths.rknnSvModel,
+                                language = settings.senseVoiceLang.takeIf { it != "auto" } ?: "",
+                                useInverseTextNormalization = true,
+                            ),
+                            tokens = paths.rknnSvTokens,
+                            // rknn 下这个参数是 NPU 核掩码，1 表示自动选核，不是 CPU 线程数
+                            numThreads = 1,
+                            provider = "rknn",
+                        )
+                    }
+                    else -> OfflineModelConfig(
                         senseVoice = OfflineSenseVoiceModelConfig(
                             model = paths.svModel,
                             language = settings.senseVoiceLang.takeIf { it != "auto" } ?: "",
@@ -299,23 +319,7 @@ class AssistantEngine(
                         config = OfflineRecognizerConfig(featConfig = feat, modelConfig = model),
                     )
                 }
-                timed("加载 VAD") {
-                    vad = Vad(
-                        assetManager = null,
-                        config = VadModelConfig(
-                            sileroVadModelConfig = SileroVadModelConfig(
-                                model = paths.vad,
-                                threshold = settings.vadThreshold,
-                                minSilenceDuration = settings.endSilenceSec,
-                                minSpeechDuration = 0.25f,
-                                windowSize = VAD_WINDOW,
-                                maxSpeechDuration = MAX_UTTERANCE_SEC,
-                            ),
-                            sampleRate = SAMPLE_RATE,
-                            numThreads = 1,
-                        ),
-                    )
-                }
+                loadVad()
             }
         }
 
@@ -327,6 +331,26 @@ class AssistantEngine(
             } else {
                 AssistantBus.log("⚠ 缺少声纹模型，本次不做声纹校验（tools/push_models.sh speaker）：\n  ✗ ${paths.speaker}")
             }
+        }
+    }
+
+    private fun loadVad() {
+        timed("加载 VAD") {
+            vad = Vad(
+                assetManager = null,
+                config = VadModelConfig(
+                    sileroVadModelConfig = SileroVadModelConfig(
+                        model = paths.vad,
+                        threshold = settings.vadThreshold,
+                        minSilenceDuration = settings.endSilenceSec,
+                        minSpeechDuration = 0.25f,
+                        windowSize = VAD_WINDOW,
+                        maxSpeechDuration = MAX_UTTERANCE_SEC,
+                    ),
+                    sampleRate = SAMPLE_RATE,
+                    numThreads = 1,
+                ),
+            )
         }
     }
 
@@ -396,23 +420,18 @@ class AssistantEngine(
         var rejected = 0
         // 本次聆听是回复之后的连续对话（不是刚唤醒）
         var followUp = false
-        // 讯飞会话；cloudEndAt > 0 表示本地已断句、已发结束帧，在等讯飞最终结果
+        // 讯飞会话，检测到说话才建；cloudEndAt > 0 表示 VAD 已断句、已发结束帧，在等讯飞最终结果
         var cloud: XfIat? = null
         var cloudEndAt = 0L
         var cloudFailLogged = false
         // 唤醒时识别模型还在后台加载：这段指令音频先攒着，加载完一次性补上
         val pending = ArrayList<FloatArray>()
 
-        fun newCloud() {
-            cloud?.cancel()
-            cloud = xfConfig?.let { XfIat(it).apply { start() } }
-            cloudEndAt = 0L
-            cloudFailLogged = false
-        }
-
         fun dropCloud() {
             cloud?.cancel()
             cloud = null
+            cloudEndAt = 0L
+            cloudFailLogged = false
         }
 
         // 录音单独一个线程，只管读麦克风往队列里放。识别模型在弱 CPU（如 RK3562）上跟不上实时的时候，
@@ -478,8 +497,8 @@ class AssistantEngine(
             utterance.clear()
             pending.clear()
             asrStream?.release()
-            asrStream = online?.createStream()
-            newCloud()
+            asrStream = if (xfConfig == null) online?.createStream() else null
+            dropCloud()
             vad?.reset()
             AssistantBus.state(EngineState.LISTENING)
             AssistantBus.partial("")
@@ -526,8 +545,8 @@ class AssistantEngine(
             lastPartial = ""
             utterance.clear()
             asrStream?.release()
-            asrStream = online?.createStream()
-            newCloud()
+            asrStream = if (xfConfig == null) online?.createStream() else null
+            dropCloud()
             vad?.reset()
             AssistantBus.state(EngineState.LISTENING)
             return null
@@ -570,6 +589,108 @@ class AssistantEngine(
             callbacks.onCommand(text)
         }
 
+        fun accept(result: String, audio: FloatArray, note: String) {
+            checkSpeaker(audio, result)?.let { v ->
+                finish(result, audio, listOf(note, v).filter { it.isNotEmpty() }.joinToString("，"))
+            }
+        }
+
+        /** 讯飞没给出结果时，用本地模型把这句录音识别一次。只有这时才占 CPU。 */
+        fun decodeLocally(audio: FloatArray, why: String) {
+            dropCloud()
+            val rec = online
+            if (rec == null) {
+                AssistantBus.log("$why，本地模型还没加载好，这句没法识别")
+                noCommand()
+                return
+            }
+            AssistantBus.state(EngineState.RECOGNIZING)
+            val t0 = SystemClock.elapsedRealtime()
+            val s = rec.createStream()
+            s.acceptWaveform(audio, SAMPLE_RATE)
+            // 流式模型有前瞻，补一段静音才能把句尾的字解出来
+            s.acceptWaveform(FloatArray(LOCAL_TAIL_SAMPLES), SAMPLE_RATE)
+            s.inputFinished()
+            while (rec.isReady(s)) rec.decode(s)
+            val text = rec.getResult(s).text
+            s.release()
+            val note = "$why，用本地结果（音频 ${audio.size * 1000L / SAMPLE_RATE}ms，解码 ${SystemClock.elapsedRealtime() - t0}ms）"
+            if (text.isBlank()) {
+                AssistantBus.log("$note，本地也没识别出文字")
+                noCommand()
+            } else {
+                accept(text, audio, note)
+            }
+        }
+
+        /** 讯飞模式的一帧：VAD 判断说没说话，音频只在说话时上传。 */
+        fun listenCloud(chunk: FloatArray, cfg: XfIat.Config) {
+            val v = vad!!
+            var ended = false
+            if (cloudEndAt == 0L) {
+                v.acceptWaveform(chunk)
+                val detected = v.isSpeechDetected()
+                if (!v.empty()) {
+                    v.pop()
+                    ended = true
+                }
+                if (!speechSeen && (detected || ended)) {
+                    speechSeen = true
+                    // VAD 确认说话时已经晚了几百毫秒，句首从缓存里补上；这一帧已经在 utterance 里了
+                    speechStart = max(0, utterance.size - (VAD_PREROLL_SEC * SAMPLE_RATE).toInt())
+                    AssistantBus.partial("（检测到说话…）")
+                    cloud = XfIat(cfg).apply {
+                        start()
+                        feed(utterance.slice(speechStart))
+                    }
+                } else if (speechSeen) {
+                    cloud?.feed(chunk)
+                }
+            }
+            val c = cloud
+            if (c == null) {
+                if (!speechSeen && listenSamples * 1000 / SAMPLE_RATE > listenTimeoutMs) noCommand()
+                return
+            }
+            val failed = c.error
+            if (failed != null && !cloudFailLogged) {
+                cloudFailLogged = true
+                AssistantBus.log("讯飞不可用：$failed")
+            }
+            if (failed == null && c.text.isNotEmpty() && c.text != lastPartial) {
+                lastPartial = c.text
+                AssistantBus.partial(c.text)
+            }
+            if (ended && failed == null && !c.finished) {
+                c.end()
+                cloudEndAt = SystemClock.elapsedRealtime()
+                AssistantBus.state(EngineState.RECOGNIZING)
+            }
+            fun speech() = utterance.slice(speechStart)
+            when {
+                failed != null -> if (ended || cloudEndAt > 0L) decodeLocally(speech(), "讯飞失败")
+                c.finished -> {
+                    if (c.text.isNotBlank()) {
+                        accept(c.text, speech(), "讯飞 ${c.timing()}")
+                    } else {
+                        // VAD 把噪声当成说话时讯飞会返回空结果，别结束会话，接着等用户开口；超时还按原来算
+                        AssistantBus.log("讯飞没识别出文字（可能是噪声），继续听")
+                        dropCloud()
+                        speechSeen = false
+                        lastPartial = ""
+                        v.reset()
+                        AssistantBus.state(EngineState.LISTENING)
+                        AssistantBus.partial("")
+                    }
+                }
+                cloudEndAt > 0L && SystemClock.elapsedRealtime() - cloudEndAt > XF_FINAL_WAIT_MS -> {
+                    AssistantBus.log("讯飞 ${XF_FINAL_WAIT_MS}ms 内没出最终结果（${c.timing()}）")
+                    if (c.text.isNotBlank()) accept(c.text, speech(), "讯飞超时，用中间结果")
+                    else decodeLocally(speech(), "讯飞超时")
+                }
+            }
+        }
+
         /** 聆听阶段处理一帧音频（识别模型已就绪）。 */
         fun listen(chunk: FloatArray) {
             val t0 = System.nanoTime()
@@ -577,61 +698,23 @@ class AssistantEngine(
                 utterance.add(chunk)
                 listenSamples += chunk.size
                 listenAudioSamples += chunk.size
+                val xf = xfConfig
                 val rec = online
-                if (rec != null) {
+                if (xf != null) {
+                    listenCloud(chunk, xf)
+                } else if (rec != null) {
                     // 唤醒时模型还没加载好，startListening 没建成流，这里补建
                     val s = asrStream ?: rec.createStream().also { asrStream = it }
-                    // 已经断句、在等讯飞结果时不再送音频
-                    if (cloudEndAt == 0L) {
-                        s.acceptWaveform(chunk, SAMPLE_RATE)
-                        while (rec.isReady(s)) rec.decode(s)
-                        cloud?.feed(chunk)
-                    }
+                    s.acceptWaveform(chunk, SAMPLE_RATE)
+                    while (rec.isReady(s)) rec.decode(s)
                     val text = rec.getResult(s).text
-                    val c = cloud
-                    if (c != null && c.error != null && !cloudFailLogged) {
-                        cloudFailLogged = true
-                        AssistantBus.log("讯飞不可用，这句改用本地识别：${c.error}")
-                    }
-                    val cloudOk = c != null && c.error == null
-                    val shown = if (cloudOk && c!!.text.isNotEmpty()) c.text else text
-                    if (shown != lastPartial) {
-                        lastPartial = shown
-                        AssistantBus.partial(shown)
-                    }
-                    val now = SystemClock.elapsedRealtime()
-                    fun accept(result: String, note: String) {
-                        val audio = utterance.toArray()
-                        checkSpeaker(audio, result)?.let { v ->
-                            finish(result, audio, listOf(note, v).filter { it.isNotEmpty() }.joinToString("，"))
-                        }
+                    if (text != lastPartial) {
+                        lastPartial = text
+                        AssistantBus.partial(text)
                     }
                     when {
-                        // 讯飞出了最终结果（本地断句后，或者讯飞自己先判定说完了）
-                        cloudOk && c!!.finished -> when {
-                            c.text.isNotBlank() -> accept(
-                                c.text,
-                                "讯飞" + (if (c.finalLatencyMs > 0) " 收尾 ${c.finalLatencyMs}ms" else "") +
-                                    "，本地「${text.trim()}」",
-                            )
-                            text.isNotBlank() -> accept(text, "讯飞结果为空，用本地结果")
-                            else -> noCommand()
-                        }
-                        // 本地断句：让讯飞收尾，最多等 XF_FINAL_WAIT_MS
-                        cloudOk && cloudEndAt == 0L && rec.isEndpoint(s) && text.isNotBlank() -> {
-                            c!!.end()
-                            cloudEndAt = now
-                            AssistantBus.state(EngineState.RECOGNIZING)
-                        }
-                        cloudOk && cloudEndAt > 0L -> if (now - cloudEndAt > XF_FINAL_WAIT_MS) {
-                            AssistantBus.log("讯飞 ${XF_FINAL_WAIT_MS}ms 内没出最终结果，用本地结果")
-                            accept(text, "讯飞超时，用本地结果")
-                        }
-                        // 纯本地，或讯飞这句已经失败
-                        rec.isEndpoint(s) && text.isNotBlank() ->
-                            accept(text, if (c != null) "讯飞失败，用本地结果" else "")
-                        text.isBlank() && (!cloudOk || c!!.text.isBlank()) &&
-                            listenSamples * 1000 / SAMPLE_RATE > listenTimeoutMs -> noCommand()
+                        rec.isEndpoint(s) && text.isNotBlank() -> accept(text, utterance.toArray(), "")
+                        text.isBlank() && listenSamples * 1000 / SAMPLE_RATE > listenTimeoutMs -> noCommand()
                     }
                 } else {
                     val v = vad!!
@@ -859,7 +942,9 @@ class AssistantEngine(
         const val WAKE_AUDIO_SEC = 2.0f
         /** 一次聆听里连续几句声纹不符就结束会话。 */
         const val MAX_REJECTED = 3
-        /** 本地断句后最多等讯飞多久出最终结果。 */
-        const val XF_FINAL_WAIT_MS = 2000L
+        /** VAD 断句后最多等讯飞多久出最终结果。短句可能还在建连，弱 CPU 上 TLS 握手也慢，别等得太短。 */
+        const val XF_FINAL_WAIT_MS = 3000L
+        /** 本地整句识别时补在句尾的静音。 */
+        const val LOCAL_TAIL_SAMPLES = SAMPLE_RATE * 2 / 3
     }
 }

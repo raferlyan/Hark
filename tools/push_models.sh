@@ -4,9 +4,11 @@
 #   tools/push_models.sh            # 推全部模型（约 900MB 解压后）
 #   tools/push_models.sh kws asr    # 只推唤醒 + 普通话流式
 #   tools/push_models.sh asr-small  # 弱 CPU 用的小一号普通话流式模型
+#   tools/push_models.sh kws vad rknn-sensevoice  # RK3562：NPU 版 SenseVoice
 #
 # 可选组：kws asr tele sensevoice vad speaker（声纹，可选）
 # 备用普通话流式模型（设置里「普通话流式模型」切换，不在默认全推里）：asr-small asr-tiny asr-ctc
+# RK3562 NPU 模型（不在默认全推里）：rknn-sensevoice
 #
 # 预置进系统镜像时不推手机，拷到本地目录（aosp/hark.mk 从这里打包到 /product/etc/hark/models）：
 #   OUT=aosp/models tools/push_models.sh kws asr
@@ -26,6 +28,7 @@ model_of() {
     asr-ctc) echo asr-models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01 ;;
     tele) echo asr-models/sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04 ;;
     sensevoice) echo asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 ;;
+    rknn-sensevoice) echo asr-models/sherpa-onnx-rk3562-10-seconds-sense-voice-zh-en-ja-ko-yue-2025-09-09 ;;
     *) echo "unknown group: $1" >&2; exit 1 ;;
   esac
 }
@@ -67,7 +70,8 @@ for g in "${groups[@]}"; do
   fi
   # 只推运行需要的文件，test_wavs/README/fp32 encoder 等不推
   mk "$DST/$dir"
-  for f in "$DL/$dir"/*.onnx "$DL/$dir"/tokens.txt; do
+  for f in "$DL/$dir"/*.onnx "$DL/$dir"/*.rknn "$DL/$dir"/tokens.txt; do
+    [ -e "$f" ] || continue  # 没匹配到的通配符会原样留下
     case "$(basename "$f")" in
       encoder-epoch-12-avg-2-chunk-16-left-64.onnx) continue ;;  # KWS 用 int8 encoder
       encoder-epoch-99-avg-1.onnx) continue ;;  # zh-14M 用 int8 encoder

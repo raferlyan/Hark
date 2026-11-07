@@ -48,6 +48,11 @@ class ModelPaths(ctx: Context, settings: AppSettings) {
     val svModel = f(svDir, "model.int8.onnx")
     val svTokens = f(svDir, "tokens.txt")
 
+    // 同一个 SenseVoice，转换成 RK3562 NPU 能跑的版本。输入长度固定为 10 秒，更长的句子会被截断
+    private val rknnSvDir = "sherpa-onnx-rk3562-10-seconds-sense-voice-zh-en-ja-ko-yue-2025-09-09"
+    val rknnSvModel = f(rknnSvDir, "model.rknn")
+    val rknnSvTokens = f(rknnSvDir, "tokens.txt")
+
     val vad = f("", "silero_vad.onnx")
 
     // 声纹：3D-Speaker CAM++ 中文，可选，缺了只是不做声纹校验
@@ -56,10 +61,12 @@ class ModelPaths(ctx: Context, settings: AppSettings) {
     fun requiredFor(mode: AsrMode): List<String> {
         val kws = listOf(kwsEncoder, kwsDecoder, kwsJoiner, kwsTokens)
         return kws + when (mode) {
-            // 讯飞模式同时跑本地普通话模型：断句靠它，断网或讯飞报错时也用它的结果
-            AsrMode.MANDARIN_STREAMING, AsrMode.IFLYTEK -> streamFiles
+            AsrMode.MANDARIN_STREAMING -> streamFiles
+            // 讯飞模式靠 VAD 断句；本地普通话模型平时不解码，断网或讯飞报错时才用
+            AsrMode.IFLYTEK -> streamFiles + vad
             AsrMode.DIALECT_TELESPEECH -> listOf(teleModel, teleTokens, vad)
             AsrMode.SENSEVOICE -> listOf(svModel, svTokens, vad)
+            AsrMode.RKNN_SENSEVOICE -> listOf(rknnSvModel, rknnSvTokens, vad)
         }
     }
 

@@ -43,7 +43,7 @@ class XfIat(private val cfg: Config) {
         val punctuation: Boolean,
         /** 动态修正（dwa=wpgs）：中间结果会回头改字，实时识别显示更准。 */
         val dynamicCorrection: Boolean,
-        /** 讯飞后端断句静音（毫秒）。本地模型断句后会主动发结束帧，这个只是兜底。 */
+        /** 讯飞后端断句静音（毫秒）。本地 VAD 断句后会主动发结束帧，这个只是兜底。 */
         val eosMs: Int,
     ) {
         companion object {
@@ -72,6 +72,8 @@ class XfIat(private val cfg: Config) {
     @Volatile var error: String? = null; private set
     /** 从 [end] 到拿到最终结果用了多久。 */
     @Volatile var finalLatencyMs = 0L; private set
+    /** TCP + TLS + WebSocket 握手用了多久，0 表示还没连上。 */
+    @Volatile private var connectMs = 0L
 
     private val queue = LinkedBlockingQueue<ByteArray>()
     @Volatile private var closed = false
@@ -101,6 +103,11 @@ class XfIat(private val cfg: Config) {
         queue.add(END)
     }
 
+    /** 写进日志的耗时，用来判断慢在建连还是慢在讯飞。 */
+    fun timing(): String =
+        (if (connectMs > 0) "建连 ${connectMs}ms" else "还没连上") +
+            (if (finalLatencyMs > 0) "，收尾 ${finalLatencyMs}ms" else "")
+
     fun cancel() {
         closed = true
         queue.add(END)
@@ -111,7 +118,9 @@ class XfIat(private val cfg: Config) {
 
     private fun run() {
         try {
+            val t0 = System.currentTimeMillis()
             val ws = connect()
+            connectMs = System.currentTimeMillis() - t0
             Thread({ readLoop(ws) }, "xf-iat-read").apply { isDaemon = true; start() }
             var status = 0
             while (!closed) {
@@ -127,6 +136,8 @@ class XfIat(private val cfg: Config) {
                 if (buf.size() > 0 || status == 0) {
                     ws.sendText(frame(status, buf.toByteArray()))
                     status = 1
+                    // 讯飞文档：发送间隔太短可能导致识别有误，建议 40ms。建连期间攒下的音频也这样一帧帧发
+                    if (!last) Thread.sleep(SEND_INTERVAL_MS)
                 }
                 if (last) {
                     // 第一帧必须是 status=0，所以结束标识总是单独发一帧
@@ -335,5 +346,6 @@ class XfIat(private val cfg: Config) {
         private const val CONNECT_TIMEOUT_MS = 3000
         private const val READ_TIMEOUT_MS = 10000
         private const val SEND_IDLE_SEC = 1L
+        private const val SEND_INTERVAL_MS = 40L
     }
 }

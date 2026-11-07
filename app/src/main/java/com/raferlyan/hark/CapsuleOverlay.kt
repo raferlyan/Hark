@@ -1,6 +1,5 @@
 package com.raferlyan.hark
 
-import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -21,7 +20,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
-import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -241,7 +239,18 @@ class CapsuleOverlay(private val ctx: Context, private val mode: DeviceMode, pri
         private val rect = RectF()
         private val rot = Matrix()
         private var angle = 0f
-        private var anim: ValueAnimator? = null
+        private var glowing = false
+        private var glowStart = 0L
+        // 描边和波浪共用这一个节拍。跟着屏幕刷新率画太费：RK3562 这类 A53 上，光动画就能吃掉一个核
+        private val tick = object : Runnable {
+            override fun run() {
+                if (!glowing) return
+                angle = (SystemClock.uptimeMillis() - glowStart) % GLOW_PERIOD_MS * 360f / GLOW_PERIOD_MS
+                invalidate()
+                if (wave.visibility == View.VISIBLE) wave.invalidate()
+                postDelayed(this, FRAME_MS)
+            }
+        }
 
         init {
             setWillNotDraw(false)
@@ -255,17 +264,16 @@ class CapsuleOverlay(private val ctx: Context, private val mode: DeviceMode, pri
         private fun radius() = min(height / 2f, dp(30f))
 
         fun startGlow() {
-            anim?.cancel()
-            anim = ValueAnimator.ofFloat(0f, 360f).apply {
-                duration = 4000
-                repeatCount = ValueAnimator.INFINITE
-                interpolator = LinearInterpolator()
-                addUpdateListener { angle = it.animatedValue as Float; invalidate() }
-                start()
-            }
+            removeCallbacks(tick)
+            glowing = true
+            glowStart = SystemClock.uptimeMillis()
+            post(tick)
         }
 
-        fun stopGlow() { anim?.cancel(); anim = null }
+        fun stopGlow() {
+            glowing = false
+            removeCallbacks(tick)
+        }
 
         override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
             stroke.shader = SweepGradient(w / 2f, h / 2f, GLOW, null)
@@ -293,6 +301,8 @@ class CapsuleOverlay(private val ctx: Context, private val mode: DeviceMode, pri
     companion object {
         private val ENTER = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
         private val EXIT = PathInterpolator(0.3f, 0f, 0.8f, 0.15f)
+        private const val FRAME_MS = 40L
+        private const val GLOW_PERIOD_MS = 4000L
         private val GLOW = intArrayOf(
             0xFF4F8BFF.toInt(), 0xFF9B5CFF.toInt(), 0xFFFF5CA8.toInt(), 0xFF3DDCFF.toInt(), 0xFF4F8BFF.toInt(),
         )
@@ -345,14 +355,14 @@ class WaveView(ctx: Context) : View(ctx) {
             Mode.LISTEN -> 0.25f + 0.75f * target
             Mode.THINK -> 0.45f + 0.12f * sin(t * 2.5f)
         }
-        // 起得快、落得慢，看起来更跟手
-        amp += (goal - amp) * (if (goal > amp) 0.35f else 0.1f)
+        // 起得快、落得慢，看起来更跟手（系数按 25fps 取）
+        amp += (goal - amp) * (if (goal > amp) 0.6f else 0.22f)
         phase += dt * (if (mode == Mode.THINK) 2.5f else 5f)
 
         val w = width.toFloat()
         val mid = height / 2f
         val maxH = height / 2f - density
-        val step = 3 * density
+        val step = 6 * density
         val n = min((w / step).toInt() + 1, ys.size)
         WAVES.forEachIndexed { i, wv ->
             // 上沿和下沿关于中线对称，围出一串透镜形的波带
@@ -370,7 +380,6 @@ class WaveView(ctx: Context) : View(ctx) {
             path.close()
             c.drawPath(path, paints[i])
         }
-        if (isAttachedToWindow && visibility == VISIBLE) postInvalidateOnAnimation()
     }
 
     private class Wave(

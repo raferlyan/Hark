@@ -666,7 +666,7 @@ class MainActivity : Activity(), AssistantBus.Listener {
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                     val mode = AsrMode.entries[pos]
-                    svLangEdit.isEnabled = mode == AsrMode.SENSEVOICE
+                    svLangEdit.isEnabled = mode == AsrMode.SENSEVOICE || mode == AsrMode.RKNN_SENSEVOICE
                     // 讯飞模式的热词在讯飞控制台配；这里的热词给兜底的本地模型用
                     hotwordsEdit.isEnabled = mode == AsrMode.MANDARIN_STREAMING || mode == AsrMode.IFLYTEK
                     streamModelSpinner.isEnabled = mode == AsrMode.MANDARIN_STREAMING || mode == AsrMode.IFLYTEK

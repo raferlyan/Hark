@@ -55,7 +55,7 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 | 内存 | 建议 4 GB 及以上（见下方说明） |
 | 麦克风 | 手机自带麦克风即可，16 kHz 单声道采集 |
 | 网络 | 不需要（下载模型时除外） |
-| GPU / NPU | 不需要，纯 CPU 推理 |
+| GPU / NPU | 不需要，默认纯 CPU 推理；RK3562 可以试验 NPU 模式，见[下文](#rk3562-npu-模式试验) |
 
 > **内存说明**：同一时刻只加载「唤醒模型 + 当前模式的一个识别模型」。int8 模型在内存里的占用大致等于文件大小加上推理时的缓冲区：普通话模式约 200 至 300 MB，TeleSpeech 模式约 400 MB。这是根据模型体积估算的，尚未在设备上实测。
 
@@ -102,7 +102,7 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 | 方言识别 | `sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04` | 约 341 MB | 中国电信 TeleSpeech，CTC，覆盖 30 多种方言 |
 | 粤语 / 多语种 | `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09` | 约 237 MB | 阿里 SenseVoice-Small，非自回归，自带语种识别和 ITN |
 | 语音活动检测 | `silero_vad.onnx` | 0.6 MB | Silero VAD |
-| 推理运行时 | `sherpa-onnx-1.13.8.aar` | 48 MB | 自带 ONNX Runtime 和 JNI 库（已放在 `app/libs/`） |
+| 推理运行时 | `sherpa-onnx-1.13.8-rknn.aar` | 25 MB | 自带 ONNX Runtime、RKNN Runtime 和 JNI 库（已放在 `app/libs/`），普通设备照常走 CPU |
 
 普通话流式模型比较吃 CPU。在骁龙 855（2 线程）上处理 1 秒音频要 0.3～0.5 秒，RK3562 这类只有 A53 小核的板子可能跟不上实时，表现为回复慢、积压大（日志「识别结果」一行末尾有实时率，大于 1 就是跟不上）。这时可以在设置的「普通话流式模型」里换小一号的，用 `tools/push_models.sh <组名>` 单独推送：
 
@@ -113,6 +113,18 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 | 小 | `sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23-mobile` | `asr-tiny` | 0.19 | 14M 参数，准确率明显差 |
 | 小（CTC） | `sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01` | `asr-ctc` | 0.13 | 约 26 MB，不支持热词，只能靠纠错表 |
 
+### RK3562 NPU 模式（试验）
+
+识别模式选「SenseVoice·RK3562 NPU」，就会用 NPU 跑 SenseVoice，唤醒模型和 VAD 仍然在 CPU 上。这个模式还没在真机上验证过。
+
+```bash
+tools/push_models.sh kws vad rknn-sensevoice
+```
+
+- 模型输入固定 10 秒，更长的句子会被截断。它是整句识别，没有边说边出字，也不支持热词。
+- 日志「识别结果」一行有 `音频 xxxms，解码 xxxms`，可以和 CPU 版 SenseVoice 对比。
+- NPU 出错时 sherpa-onnx 会直接退出进程，应用会闪退，原因在 logcat 的 `sherpa-onnx` 和 `RKNN` 日志里。
+
 ## 直接下载
 
 不想自己编译的话，在 [Releases](https://github.com/raferlyan/Hark/releases) 页面下载安装包和模型。模型没有变化的版本不会重复上传：唤醒、普通话、方言、SenseVoice 四个模型包在 [v0.3.0](https://github.com/raferlyan/Hark/releases/tag/v0.3.0) 里，声纹模型在 [v0.4.0](https://github.com/raferlyan/Hark/releases/tag/v0.4.0) 里，三个备用的小号普通话流式模型在 [v0.5.0](https://github.com/raferlyan/Hark/releases/tag/v0.5.0) 里，安装包用最新版。
@@ -121,11 +133,13 @@ Hark（古英语「听！」）是一个面向手机和平板车机的语音助�
 |---|---|---|
 | `Hark-v*-arm64.apk`（v0.2.0 时叫 `XiaoYanAssistant-v0.2.0-arm64.apk`） | 安装包（不含大模型 key，在设置里填自己的 key） | 必需 |
 | `hark-models-kws-vad.tar.gz` | 唤醒模型 + VAD | 必需 |
-| `hark-models-asr-mandarin.tar.gz` | 普通话流式识别 | 用普通话模式或讯飞模式时（讯飞模式拿它断句、兜底） |
+| `hark-models-asr-mandarin.tar.gz` | 普通话流式识别 | 用普通话模式或讯飞模式时（讯飞模式拿它兜底） |
 | `hark-models-telespeech.tar.gz` | 方言识别（TeleSpeech） | 用方言模式时 |
 | `hark-models-sensevoice.tar.gz` | 粤语 / 多语种（SenseVoice） | 用 SenseVoice 模式时 |
 | `hark-models-speaker.tar.gz` | 声纹模型（3D-Speaker CAM++） | 开声纹校验时（v0.4.0 起） |
 | `hark-models-asr-small.tar.gz` / `-asr-tiny` / `-asr-ctc` | 小号普通话流式模型（中 / 小 / 小 CTC） | 设备跟不上实时、在设置里换模型时（v0.5.0 起） |
+
+RK3562 NPU 模型没有放进 Releases，`tools/push_models.sh rknn-sensevoice` 会从 sherpa-onnx 官方下载。
 
 每个模型包解压后都是一个 `models/` 目录，推送到手机即可：
 
@@ -468,10 +482,10 @@ xf.apiSecret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 工作方式：
 
-- 每句话开一个 WebSocket 会话，音频同时送给讯飞和本地普通话流式模型。浮窗里的实时文字优先显示讯飞的结果。
-- 断句由本地模型负责（参数是「句尾静音判定」）。本地判定说完后，立即给讯飞发结束帧，然后最多等 2 秒拿最终结果。讯飞的后端断句（`eos`）设成比本地多 1 秒，只用来兜底。
-- 断网、鉴权失败、讯飞返回错误码或者 2 秒内没出结果，这句就用本地结果，日志里会写明原因。所以这个模式也需要推送本地普通话模型（`tools/push_models.sh asr`）。
-- 日志会同时记下讯飞和本地的结果，比如 `讯飞 收尾 320ms，本地「现在几点」`，方便对比两边的识别效果。纠错规则、声纹校验、回放和标注在这个模式下照常可用。
+- 用 Silero VAD 判断说话。检测到说话才开 WebSocket 会话，从句首开始上传，开口前的静音不上传，也不占讯飞的调用次数。
+- VAD 判定说完后（参数是「句尾静音判定」），立即给讯飞发结束帧，然后最多等 3 秒拿最终结果。讯飞的后端断句（`eos`）设成比 VAD 多 1 秒，只用来兜底。
+- 本地普通话模型平时只加载不解码，不占 CPU。断网、鉴权失败或讯飞返回错误码时，把这句录音交给它识别一次；3 秒内没出最终结果时，优先用讯飞已返回的中间结果，一个字都没有才用本地模型。原因都会写进日志。这个模式需要推送 VAD 和本地普通话模型（`tools/push_models.sh vad asr`）。
+- 日志会记下耗时，比如 `讯飞 建连 180ms，收尾 320ms`，方便判断慢在哪一步。这个模式下浮窗里的实时文字只来自讯飞。纠错规则、声纹校验、回放和标注照常可用。
 
 可调参数：
 
